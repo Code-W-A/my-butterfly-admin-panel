@@ -1,0 +1,1078 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import { useRouter } from "next/navigation";
+
+import { zodResolver } from "@hookform/resolvers/zod";
+import { deleteField } from "firebase/firestore";
+import { CircleHelp } from "lucide-react";
+import { useFieldArray, useForm } from "react-hook-form";
+import { z } from "zod";
+
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { logFirebaseError } from "@/lib/firebase/error-utils.client";
+import { createQuestion, deleteQuestion, listAllQuestionOptionValues, updateQuestion } from "@/lib/firestore/questions";
+import type { QuestionnaireQuestion, WithId } from "@/lib/firestore/types";
+import { listVocabularyKeys, listVocabularyOptions, type VocabularyCategory } from "@/lib/firestore/vocabulary";
+
+const questionSchema = z.object({
+  active: z.boolean(),
+  order: z.coerce.number().int().min(0),
+  type: z.enum(["single_select", "multi_select", "text", "range"]),
+  key: z.string().min(1),
+  label: z.string().min(1),
+  helpText: z.string().optional(),
+  options: z
+    .array(
+      z.object({
+        value: z.string().min(1),
+        label: z.string().min(1),
+        order: z.coerce.number().int(),
+        active: z.boolean(),
+      }),
+    )
+    .optional(),
+  validation: z.object({
+    required: z.boolean(),
+    min: z.coerce.number().optional(),
+    max: z.coerce.number().optional(),
+  }),
+});
+
+type QuestionFormValues = z.infer<typeof questionSchema>;
+type OptionDraft = NonNullable<QuestionFormValues["options"]>[number];
+type VocabularyKeyOption = { value: string; label: string };
+
+const defaultValues: QuestionFormValues = {
+  active: true,
+  order: 0,
+  type: "single_select",
+  key: "level",
+  label: "",
+  helpText: "",
+  options: [],
+  validation: {
+    required: false,
+    min: undefined,
+    max: undefined,
+  },
+};
+
+const questionTypeOptions: Array<{ value: QuestionFormValues["type"]; label: string }> = [
+  { value: "single_select", label: "Selecție unică" },
+  { value: "multi_select", label: "Selecție multiplă" },
+  { value: "text", label: "Text" },
+  { value: "range", label: "Interval" },
+];
+
+const guessQuestionKey = (selected: WithId<QuestionnaireQuestion>): QuestionFormValues["key"] | null => {
+  // 1) Try option values (best signal for legacy questions)
+  const optionValues = (selected.options ?? []).map((o) => String(o.value ?? "").toLowerCase());
+  const optionLabels = (selected.options ?? []).map((o) => String(o.label ?? "").toLowerCase());
+  const all = [...optionValues, ...optionLabels].join(" ");
+
+  if (/(beginner|intermediate|advanced|incepator|începător|intermediar|avansat)/.test(all)) return "level";
+  if (/(offensive|all[-_ ]?round|defensive|ofensiv|defensiv)/.test(all)) return "style";
+  if (/(close|near|medium|mid|far|aproape|mediu|departe)/.test(all)) return "distance";
+  if (/(control|spin|speed|vitez)/.test(all)) return "priority";
+
+  // 2) Fallback to question text
+  const text = `${selected.label ?? ""} ${selected.helpText ?? ""}`.toLowerCase();
+  if (/(nivel)/.test(text)) return "level";
+  if (/(stil)/.test(text)) return "style";
+  if (/(distan)/.test(text)) return "distance";
+  if (/(priorit)/.test(text)) return "priority";
+  if (/(buget)/.test(text)) return "budget";
+  if (/(prefer)/.test(text)) return "preferences";
+  return null;
+};
+
+const normalizeQuestionKey = (selected: WithId<QuestionnaireQuestion>): QuestionFormValues["key"] => {
+  if (typeof selected.key === "string" && selected.key.trim()) return selected.key;
+  return guessQuestionKey(selected) ?? "level";
+};
+
+const normalizeQuestionType = (selected: WithId<QuestionnaireQuestion>): QuestionFormValues["type"] => {
+  const t = selected.type;
+  if (t === "single_select" || t === "multi_select" || t === "text" || t === "range") return t;
+  if (selected.validation?.min !== undefined || selected.validation?.max !== undefined) return "range";
+  if ((selected.options ?? []).length > 0) return "single_select";
+  return "text";
+};
+
+const slugify = (value: string) => {
+  const ascii = value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  const slug = ascii.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return slug || "option";
+};
+
+const randomSuffix = () => {
+  if (typeof crypto !== "undefined" && "getRandomValues" in crypto) {
+    const buffer = new Uint32Array(1);
+    crypto.getRandomValues(buffer);
+    return buffer[0].toString(36).slice(0, 4);
+  }
+  return Math.floor(Math.random() * 36 ** 4)
+    .toString(36)
+    .padStart(4, "0");
+};
+
+const generateUniqueValue = (label: string, existing: Set<string>) => {
+  const base = slugify(label);
+  for (let i = 0; i < 6; i += 1) {
+    const candidate = `${base}-${randomSuffix()}`;
+    if (!existing.has(candidate)) return candidate;
+  }
+  return null;
+};
+
+function HelpTip({ text }: { text: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label="Info"
+          className="inline-flex items-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/50"
+        >
+          <CircleHelp className="size-4" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6} className="max-w-[280px] text-left">
+        {text}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+type QuestionEditorProps = {
+  questionnaireId: string;
+  selected: WithId<QuestionnaireQuestion> | null;
+  onSaved: () => void;
+  onCancelEdit: () => void;
+};
+
+export function QuestionEditor({ questionnaireId, selected, onSaved, onCancelEdit }: QuestionEditorProps) {
+  const router = useRouter();
+  const form = useForm<QuestionFormValues>({
+    resolver: zodResolver(questionSchema),
+    defaultValues,
+  });
+
+  const { fields, append, remove, replace, update } = useFieldArray({
+    control: form.control,
+    name: "options",
+  });
+
+  const typeValue = form.watch("type");
+  const requiresOptions = typeValue === "single_select" || typeValue === "multi_select";
+  const isRangeType = typeValue === "range";
+  const keyValue = form.watch("key");
+  const [vocabularyCategories, setVocabularyCategories] = useState<WithId<VocabularyCategory>[]>([]);
+  const vocabularyKeyValues = useMemo(() => vocabularyCategories.map((item) => item.key), [vocabularyCategories]);
+  const vocabularyKeyOptions = useMemo<VocabularyKeyOption[]>(
+    () => [
+      ...vocabularyCategories
+        .slice()
+        .sort((a, b) => a.order - b.order)
+        .map((item) => ({
+          value: item.key,
+          label: item.active ? item.title : `${item.title} (inactiv)`,
+        })),
+      ...(vocabularyKeyValues.includes("preferences") ? [] : [{ value: "preferences", label: "Preferințe" }]),
+      ...(vocabularyKeyValues.includes("budget") ? [] : [{ value: "budget", label: "Buget" }]),
+    ],
+    [vocabularyCategories, vocabularyKeyValues],
+  );
+  const isVocabularyKey = vocabularyKeyValues.includes(String(keyValue));
+
+  const keyHelpText = useMemo(() => {
+    const key = String(keyValue || "");
+    const category = vocabularyCategories.find((c) => c.key === key);
+
+    if (key === "preferences") {
+      return "Preferințe: răspunsul ajută la ordonarea recomandărilor (ex: control/spin/viteză/greutate). Nu elimină produse direct, ci poate schimba ordinea în rezultate.";
+    }
+    if (key === "budget") {
+      return "Buget: răspunsul filtrează recomandările în funcție de preț (ex: interval minim–maxim) și de regulile de buget din scenariile produselor.";
+    }
+    if (key === "priority") {
+      return "Prioritate: este folosită ca criteriu de potrivire cu scenariile (dacă un scenariu cere o anumită prioritate, produsul apare doar când răspunsul se potrivește).";
+    }
+    if (key === "level" || key === "style" || key === "distance") {
+      return "Răspunsul este folosit ca criteriu de potrivire cu scenariile produselor (dacă un scenariu are această condiție setată, produsul apare doar când răspunsul se potrivește).";
+    }
+    if (category) {
+      return `Categorie din Vocabulary: “${category.title}”. Răspunsul este folosit ca criteriu de potrivire cu scenariile produselor pentru această categorie.`;
+    }
+    return "Răspunsul este folosit în calculul recomandărilor, în funcție de reguli/scenarii configurate la produse.";
+  }, [keyValue, vocabularyCategories]);
+  const [isOptionDialogOpen, setIsOptionDialogOpen] = useState(false);
+  const [editingOptionIndex, setEditingOptionIndex] = useState<number | null>(null);
+  const [optionDraft, setOptionDraft] = useState<OptionDraft | null>(null);
+  const [optionError, setOptionError] = useState<string | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const prevKeyRef = useRef<string | null>(null);
+  const skipImportPromptRef = useRef(true);
+  const userChangedKeyRef = useRef(false);
+  const keySelectOpenedByUserRef = useRef(false);
+
+  useEffect(() => {
+    listVocabularyKeys({ includeInactive: true })
+      .then((items) => setVocabularyCategories(items))
+      .catch((err) => {
+        logFirebaseError("QuestionEditor: loadVocabularyKeys", err);
+        setVocabularyCategories([]);
+      });
+  }, []);
+
+  useEffect(() => {
+    if (selected) {
+      // #region agent log
+      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location: "question-editor.tsx:166",
+          message: "reset-from-selected",
+          data: {
+            selectedId: selected.id,
+            selectedKey: selected.key,
+            selectedType: selected.type,
+            optionsCount: (selected.options ?? []).length,
+          },
+          timestamp: Date.now(),
+          sessionId: "debug-session",
+          runId: "pre-fix",
+          hypothesisId: "H1",
+        }),
+      }).catch(() => {
+        /* no-op */
+      });
+      // #endregion
+      const normalizedType = normalizeQuestionType(selected);
+      const normalizedKey = normalizeQuestionKey(selected);
+      // #region agent log
+      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location: "question-editor.tsx:170",
+          message: "normalized-selected",
+          data: { normalizedType, normalizedKey },
+          timestamp: Date.now(),
+          sessionId: "debug-session",
+          runId: "pre-fix",
+          hypothesisId: "H2",
+        }),
+      }).catch(() => {
+        /* no-op */
+      });
+      // #endregion
+      form.reset({
+        active: selected.active,
+        order: selected.order,
+        type: normalizedType,
+        key: normalizedKey,
+        label: selected.label,
+        helpText: selected.helpText ?? "",
+        options: selected.options ?? [],
+        validation: {
+          required: selected.validation?.required ?? false,
+          min: selected.validation?.min,
+          max: selected.validation?.max,
+        },
+      });
+      // #region agent log
+      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location: "question-editor.tsx:186",
+          message: "values-after-reset",
+          data: { values: form.getValues() },
+          timestamp: Date.now(),
+          sessionId: "debug-session",
+          runId: "pre-fix",
+          hypothesisId: "H1",
+        }),
+      }).catch(() => {
+        /* no-op */
+      });
+      // #endregion
+    } else {
+      // #region agent log
+      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location: "question-editor.tsx:179",
+          message: "reset-defaults",
+          data: {},
+          timestamp: Date.now(),
+          sessionId: "debug-session",
+          runId: "pre-fix",
+          hypothesisId: "H2",
+        }),
+      }).catch(() => {
+        /* no-op */
+      });
+      // #endregion
+      form.reset(defaultValues);
+    }
+    skipImportPromptRef.current = true;
+    keySelectOpenedByUserRef.current = false;
+  }, [form, selected]);
+
+  useEffect(() => {
+    // Keep validation constraints relevant to the selected type.
+    // For non-range questions, we don't want numeric min/max lingering in Firestore.
+    if (!isRangeType) {
+      form.setValue("validation.min", undefined);
+      form.setValue("validation.max", undefined);
+    }
+  }, [form, isRangeType]);
+
+  useEffect(() => {
+    if (String(keyValue) !== "budget") return;
+    if (form.getValues("type") !== "range") {
+      form.setValue("type", "range", { shouldDirty: true });
+    }
+    if (form.getValues("options")?.length) {
+      form.setValue("options", [], { shouldDirty: true });
+    }
+  }, [form, keyValue]);
+
+  useEffect(() => {
+    if (String(keyValue) !== "preferences") return;
+    if (form.getValues("type") !== "multi_select") {
+      form.setValue("type", "multi_select", { shouldDirty: true });
+    }
+  }, [form, keyValue]);
+
+  useEffect(() => {
+    // #region agent log
+    fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        location: "question-editor.tsx:193",
+        message: "type-key-watch",
+        data: { typeValue, keyValue, requiresOptions, isRangeType },
+        timestamp: Date.now(),
+        sessionId: "debug-session",
+        runId: "pre-fix",
+        hypothesisId: "H2",
+      }),
+    }).catch(() => {
+      /* no-op */
+    });
+    // #endregion
+  }, [isRangeType, keyValue, requiresOptions, typeValue]);
+
+  const options = form.watch("options") ?? [];
+  // #region agent log
+  fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      location: "question-editor.tsx:202",
+      message: "options-watch",
+      data: { optionsCount: options.length, requiresOptions },
+      timestamp: Date.now(),
+      sessionId: "debug-session",
+      runId: "pre-fix",
+      hypothesisId: "H3",
+    }),
+  }).catch(() => {
+    /* no-op */
+  });
+  // #endregion
+  const importVocabularyOptions = useCallback(async () => {
+    if (!isVocabularyKey) return;
+    setImportError(null);
+    setIsImporting(true);
+    try {
+      // #region agent log
+      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location: "question-editor.tsx:214",
+          message: "import-start",
+          data: { keyValue, optionsCount: options.length },
+          timestamp: Date.now(),
+          sessionId: "debug-session",
+          runId: "pre-fix",
+          hypothesisId: "H4",
+        }),
+      }).catch(() => {
+        /* no-op */
+      });
+      // #endregion
+      const vocabOptions = await listVocabularyOptions(String(keyValue), { includeInactive: true });
+      const next = vocabOptions.map((option) => ({
+        value: option.value,
+        label: option.label,
+        order: option.order,
+        active: option.active,
+      }));
+      replace(next);
+      // #region agent log
+      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location: "question-editor.tsx:231",
+          message: "import-done",
+          data: { vocabCount: vocabOptions.length, mergedCount: next.length },
+          timestamp: Date.now(),
+          sessionId: "debug-session",
+          runId: "pre-fix",
+          hypothesisId: "H4",
+        }),
+      }).catch(() => {
+        /* no-op */
+      });
+      // #endregion
+    } catch (err) {
+      setImportError("Nu pot importa opțiunile din Vocabulary.");
+      // #region agent log
+      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location: "question-editor.tsx:235",
+          message: "import-error",
+          data: { error: String(err) },
+          timestamp: Date.now(),
+          sessionId: "debug-session",
+          runId: "pre-fix",
+          hypothesisId: "H4",
+        }),
+      }).catch(() => {
+        /* no-op */
+      });
+      // #endregion
+    } finally {
+      setIsImporting(false);
+    }
+  }, [isVocabularyKey, keyValue, options.length, replace]);
+
+  useEffect(() => {
+    prevKeyRef.current = keyValue;
+    skipImportPromptRef.current = false;
+    userChangedKeyRef.current = false;
+    keySelectOpenedByUserRef.current = false;
+    if (!requiresOptions || !isVocabularyKey) return;
+    void importVocabularyOptions();
+  }, [isVocabularyKey, keyValue, requiresOptions, importVocabularyOptions]);
+
+  useEffect(() => {
+    if (!requiresOptions) return;
+    // #region agent log
+    fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        location: "question-editor.tsx:246",
+        message: "options-state",
+        data: { requiresOptions, isVocabularyKey, fieldsCount: fields.length, optionsCount: options.length },
+        timestamp: Date.now(),
+        sessionId: "debug-session",
+        runId: "pre-fix",
+        hypothesisId: "H3",
+      }),
+    }).catch(() => {
+      /* no-op */
+    });
+    // #endregion
+  }, [fields.length, isVocabularyKey, options.length, requiresOptions]);
+  const openNewOptionDialog = () => {
+    setEditingOptionIndex(null);
+    setOptionError(null);
+    setOptionDraft({
+      value: "",
+      label: "",
+      order: fields.length,
+      active: true,
+    });
+    setIsOptionDialogOpen(true);
+  };
+
+  const openEditOptionDialog = (index: number) => {
+    const current = form.getValues(`options.${index}`);
+    setEditingOptionIndex(index);
+    setOptionError(null);
+    setOptionDraft({
+      value: current?.value ?? "",
+      label: current?.label ?? "",
+      order: current?.order ?? index,
+      active: current?.active ?? true,
+    });
+    setIsOptionDialogOpen(true);
+  };
+
+  const closeOptionDialog = () => {
+    setIsOptionDialogOpen(false);
+    setEditingOptionIndex(null);
+    setOptionDraft(null);
+    setOptionError(null);
+  };
+
+  const canSaveOption = Boolean(optionDraft?.label.trim());
+  const handleSaveOption = async () => {
+    if (!optionDraft) return;
+    setOptionError(null);
+    const label = optionDraft.label.trim();
+    if (!label) {
+      setOptionError("Completează textul afișat.");
+      return;
+    }
+    const existingValues = await listAllQuestionOptionValues();
+    options.forEach((option, index) => {
+      if (editingOptionIndex !== null && index === editingOptionIndex) return;
+      if (option.value) existingValues.add(option.value);
+    });
+    let resolvedValue: string | null = optionDraft.value?.trim() ?? null;
+    if (!resolvedValue || existingValues.has(resolvedValue)) {
+      resolvedValue = generateUniqueValue(label, existingValues);
+    }
+    if (!resolvedValue) {
+      setOptionError("Nu pot genera un ID unic. Încearcă un alt text.");
+      return;
+    }
+    const payload: OptionDraft = {
+      ...optionDraft,
+      value: resolvedValue,
+      label,
+      order: Number.isFinite(optionDraft.order) ? Number(optionDraft.order) : 0,
+    };
+    if (editingOptionIndex === null) {
+      append(payload);
+    } else {
+      update(editingOptionIndex, payload);
+    }
+    closeOptionDialog();
+  };
+
+  const onSubmit = async (values: QuestionFormValues) => {
+    let resolvedOptions = values.options ?? [];
+    if (requiresOptions && vocabularyKeyValues.includes(String(values.key))) {
+      const vocabOptions = await listVocabularyOptions(String(values.key), { includeInactive: true });
+      resolvedOptions = vocabOptions.map((option) => ({
+        value: option.value,
+        label: option.label,
+        order: option.order ?? 0,
+        active: option.active,
+      }));
+    }
+
+    const basePayload: Omit<QuestionnaireQuestion, "createdAt" | "updatedAt"> = {
+      active: values.active,
+      order: values.order,
+      type: values.type,
+      key: values.key,
+      label: values.label.trim(),
+      ...(values.helpText?.trim() ? { helpText: values.helpText.trim() } : {}),
+      validation: {
+        required: values.validation.required,
+        ...(values.validation.min !== undefined ? { min: values.validation.min } : {}),
+        ...(values.validation.max !== undefined ? { max: values.validation.max } : {}),
+      },
+    };
+
+    if (selected) {
+      const updatePayload: Record<string, unknown> = {
+        ...basePayload,
+        ...(requiresOptions ? { options: resolvedOptions } : { options: deleteField() }),
+      };
+      await updateQuestion(questionnaireId, selected.id, updatePayload);
+    } else {
+      const createPayload = requiresOptions ? { ...basePayload, options: resolvedOptions } : basePayload;
+      await createQuestion(questionnaireId, createPayload);
+    }
+    onSaved();
+    if (!selected) {
+      form.reset(defaultValues);
+    }
+  };
+
+  const onDelete = async () => {
+    if (!selected) return;
+    await deleteQuestion(questionnaireId, selected.id);
+    onSaved();
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="font-semibold text-lg">{selected ? "Editează întrebarea" : "Adaugă întrebare"}</h3>
+        {selected ? (
+          <div className="flex items-center gap-2">
+            <Button type="button" variant="outline" onClick={onCancelEdit}>
+              Anulează editarea
+            </Button>
+            <Button type="button" variant="destructive" onClick={onDelete}>
+              Șterge
+            </Button>
+          </div>
+        ) : null}
+      </div>
+
+      <Form {...form}>
+        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            <FormField
+              control={form.control}
+              name="key"
+              render={({ field }) => (
+                <FormItem data-tour="question-editor-key">
+                  <FormLabel>
+                    <HelpTip text="Alege ce fel de întrebare este (Nivel, Stil, Distanță, Prioritate, Preferințe, Buget). Răspunsul se folosește la calculul recomandărilor." />
+                    Cheie
+                  </FormLabel>
+                  <Select
+                    value={field.value}
+                    onOpenChange={(open) => {
+                      if (open) keySelectOpenedByUserRef.current = true;
+                    }}
+                    onValueChange={(value) => {
+                      // Radix can call onValueChange during form resets; only treat as user action
+                      // if the dropdown was opened by the user.
+                      userChangedKeyRef.current = keySelectOpenedByUserRef.current;
+                      keySelectOpenedByUserRef.current = false;
+                      if (!userChangedKeyRef.current && value === "") {
+                        // #region agent log
+                        fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            location: "question-editor.tsx:388",
+                            message: "key-change-ignored",
+                            data: { value, userChanged: userChangedKeyRef.current },
+                            timestamp: Date.now(),
+                            sessionId: "debug-session",
+                            runId: "post-fix",
+                            hypothesisId: "H2",
+                          }),
+                        }).catch(() => {
+                          /* no-op */
+                        });
+                        // #endregion
+                        return;
+                      }
+                      // #region agent log
+                      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          location: "question-editor.tsx:395",
+                          message: "key-changed",
+                          data: { value, userChanged: userChangedKeyRef.current },
+                          timestamp: Date.now(),
+                          sessionId: "debug-session",
+                          runId: "post-fix",
+                          hypothesisId: "H2",
+                        }),
+                      }).catch(() => {
+                        /* no-op */
+                      });
+                      // #endregion
+                      field.onChange(value);
+                    }}
+                  >
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Alege cheia" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {vocabularyKeyOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="type"
+              render={({ field }) => (
+                <FormItem data-tour="question-editor-type">
+                  <FormLabel>
+                    <HelpTip text="Cum răspunde utilizatorul: o opțiune, mai multe, text liber sau un interval." />
+                    Tip
+                  </FormLabel>
+                  <Select
+                    value={field.value}
+                    onOpenChange={(open) => {
+                      if (open) keySelectOpenedByUserRef.current = true;
+                    }}
+                    onValueChange={(value) => {
+                      const userChanged = keySelectOpenedByUserRef.current;
+                      keySelectOpenedByUserRef.current = false;
+                      if (!userChanged && value === "") {
+                        // #region agent log
+                        fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            location: "question-editor.tsx:425",
+                            message: "type-change-ignored",
+                            data: { value, userChanged },
+                            timestamp: Date.now(),
+                            sessionId: "debug-session",
+                            runId: "post-fix",
+                            hypothesisId: "H2",
+                          }),
+                        }).catch(() => {
+                          /* no-op */
+                        });
+                        // #endregion
+                        return;
+                      }
+                      // #region agent log
+                      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          location: "question-editor.tsx:433",
+                          message: "type-changed",
+                          data: { value, userChanged },
+                          timestamp: Date.now(),
+                          sessionId: "debug-session",
+                          runId: "post-fix",
+                          hypothesisId: "H2",
+                        }),
+                      }).catch(() => {
+                        /* no-op */
+                      });
+                      // #endregion
+                      field.onChange(value);
+                    }}
+                  >
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Alege tipul" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {questionTypeOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+          <div className="text-muted-foreground text-xs leading-relaxed">{keyHelpText}</div>
+
+          <FormField
+            control={form.control}
+            name="label"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>
+                  <HelpTip text="Întrebarea exactă pe care o vede utilizatorul în aplicație." />
+                  Text întrebare
+                </FormLabel>
+                <FormControl>
+                  <Input placeholder="Ex: Care este nivelul tău?" {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <FormField
+              control={form.control}
+              name="order"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>
+                    <HelpTip text="Poziția întrebării în chestionar. Un număr mai mic înseamnă că apare mai sus." />
+                    Ordine
+                  </FormLabel>
+                  <FormControl>
+                    <Input type="number" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="active"
+              render={({ field }) => (
+                <FormItem className="flex items-center justify-between rounded-md border p-3">
+                  <FormLabel>
+                    <HelpTip text="Dacă e oprit, întrebarea nu apare utilizatorilor." />
+                    Activ
+                  </FormLabel>
+                  <FormControl>
+                    <Switch checked={field.value} onCheckedChange={field.onChange} />
+                  </FormControl>
+                </FormItem>
+              )}
+            />
+          </div>
+
+          <FormField
+            control={form.control}
+            name="helpText"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>
+                  <HelpTip text="Un rând scurt sub întrebare, ca să explice mai clar ce trebuie completat (opțional)." />
+                  Text de ajutor
+                </FormLabel>
+                <FormControl>
+                  <Textarea rows={2} {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <div className={`grid gap-4 ${isRangeType ? "md:grid-cols-3" : ""}`}>
+            <FormField
+              control={form.control}
+              name="validation.required"
+              render={({ field }) => (
+                <FormItem className="flex items-center justify-between rounded-md border p-3">
+                  <FormLabel>
+                    <HelpTip text="Dacă e pornit, utilizatorul trebuie să răspundă ca să continue." />
+                    Obligatoriu
+                  </FormLabel>
+                  <FormControl>
+                    <Switch checked={field.value} onCheckedChange={field.onChange} />
+                  </FormControl>
+                </FormItem>
+              )}
+            />
+            {isRangeType ? (
+              <>
+                <FormField
+                  control={form.control}
+                  name="validation.min"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        <HelpTip text="Cea mai mică valoare permisă pentru interval." />
+                        Minim
+                      </FormLabel>
+                      <FormControl>
+                        <Input type="number" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="validation.max"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        <HelpTip text="Cea mai mare valoare permisă pentru interval." />
+                        Maxim
+                      </FormLabel>
+                      <FormControl>
+                        <Input type="number" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </>
+            ) : null}
+          </div>
+
+          {requiresOptions && String(keyValue) !== "budget" ? (
+            <div className="space-y-3" data-tour="question-editor-options">
+              <div className="flex items-center justify-between">
+                <h4 className="flex items-center gap-2 font-medium">
+                  <HelpTip text="Listele de răspuns pe care utilizatorul le poate alege." />
+                  Opțiuni
+                </h4>
+                <div className="flex items-center gap-2">
+                  {isVocabularyKey ? (
+                    <>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => void importVocabularyOptions()}
+                        disabled={isImporting}
+                      >
+                        {isImporting ? "Se încarcă..." : "Reîncarcă din Vocabulary"}
+                      </Button>
+                      <Button type="button" variant="outline" onClick={() => router.push("/dashboard/vocabulary")}>
+                        Deschide Vocabulary
+                      </Button>
+                    </>
+                  ) : (
+                    <Button type="button" variant="outline" onClick={openNewOptionDialog}>
+                      Adaugă opțiune
+                    </Button>
+                  )}
+                </div>
+              </div>
+              {isVocabularyKey ? (
+                <div className="text-muted-foreground text-xs">
+                  Opțiunile sunt gestionate exclusiv în Vocabulary și se sincronizează automat aici.
+                </div>
+              ) : null}
+              {importError ? <div className="text-destructive text-xs">{importError}</div> : null}
+              {fields.length === 0 ? (
+                <div className="text-muted-foreground text-xs">
+                  {isVocabularyKey
+                    ? "Nu există opțiuni active în Vocabulary pentru această cheie."
+                    : "Nu există opțiuni adăugate încă."}
+                </div>
+              ) : (
+                <div className="rounded-md border">
+                  {fields.map((fieldItem, index) => {
+                    const current = options[index] ?? fieldItem;
+                    return (
+                      <div
+                        key={fieldItem.id}
+                        className="flex flex-col gap-3 border-b p-3 last:border-b-0 md:flex-row md:items-center md:justify-between"
+                      >
+                        <div className="space-y-1 text-sm">
+                          <div className="font-medium">{current.label || current.value || "Opțiune fără etichetă"}</div>
+                          <div className="text-muted-foreground text-xs">
+                            Valoare: {current.value || "-"} · Ordine: {current.order ?? "-"} ·{" "}
+                            {current.active ? "Activ" : "Inactiv"}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {isVocabularyKey ? (
+                            <span className="text-muted-foreground text-xs">Gestionat în Vocabulary</span>
+                          ) : (
+                            <>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => openEditOptionDialog(index)}
+                              >
+                                Editează
+                              </Button>
+                              <Button type="button" variant="outline" size="sm" onClick={() => remove(index)}>
+                                Elimină
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          <Button type="submit" data-tour="questionnaire-add-question">
+            {selected ? "Actualizează întrebarea" : "Adaugă întrebarea"}
+          </Button>
+        </form>
+      </Form>
+
+      <Dialog
+        open={isOptionDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeOptionDialog();
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{editingOptionIndex === null ? "Adaugă opțiune" : "Editează opțiunea"}</DialogTitle>
+          </DialogHeader>
+          {optionDraft ? (
+            <div className="space-y-4">
+              <div className="text-muted-foreground text-xs">ID-ul se generează automat din text.</div>
+              <div className="space-y-2">
+                <Label>
+                  <HelpTip text="Textul pe care îl vede utilizatorul în listă." />
+                  Text (afișat)
+                </Label>
+                <Input
+                  value={optionDraft.label}
+                  onChange={(event) =>
+                    setOptionDraft((current) => (current ? { ...current, label: event.target.value } : current))
+                  }
+                />
+              </div>
+              {optionError ? <div className="text-destructive text-xs">{optionError}</div> : null}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>
+                    <HelpTip text="Ordinea în care apare opțiunea în listă." />
+                    Ordine
+                  </Label>
+                  <Input
+                    type="number"
+                    value={optionDraft.order}
+                    onChange={(event) =>
+                      setOptionDraft((current) =>
+                        current
+                          ? { ...current, order: event.target.value === "" ? 0 : Number(event.target.value) }
+                          : current,
+                      )
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between rounded-md border p-3">
+                  <Label>
+                    <HelpTip text="Dacă e oprită, opțiunea nu apare utilizatorului." />
+                    Activ
+                  </Label>
+                  <Switch
+                    checked={optionDraft.active}
+                    onCheckedChange={(value) =>
+                      setOptionDraft((current) => (current ? { ...current, active: value } : current))
+                    }
+                  />
+                </div>
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={closeOptionDialog}>
+              Anulează
+            </Button>
+            <Button type="button" onClick={handleSaveOption} disabled={!canSaveOption}>
+              Salvează opțiunea
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
