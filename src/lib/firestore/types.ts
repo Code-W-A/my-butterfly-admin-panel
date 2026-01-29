@@ -97,4 +97,42 @@ export type SpecialistRequest = {
   reply?: SpecialistRequestReply;
 };
 
+export type QuestionnaireCompletionUser = {
+  uid?: string;
+  isAnonymous: boolean;
+  email?: string;
+};
+
+export type QuestionnaireCompletionContact = {
+  name: string;
+  email: string;
+  phone?: string;
+};
+
+export type QuestionnaireCompletion = {
+  createdAt: Timestamp;
+  questionnaireId: string;
+  questionnaireTitle: string;
+  user: QuestionnaireCompletionUser;
+  contact: QuestionnaireCompletionContact;
+  answers: Record<string, unknown>;
+  matchProductIds?: string[];
+  specialistRequestId?: string;
+};
+
+export type QuestionnaireAnalyticsDaily = {
+  day: Timestamp; // start-of-day UTC
+  questionnaireId: string;
+  starts: number;
+  completes: number;
+  answers?: {
+    level?: Record<string, number>;
+    style?: Record<string, number>;
+    distance?: Record<string, number>;
+    priority?: Record<string, number>;
+    preferences?: Record<string, number>;
+    budgetBuckets?: Record<string, number>;
+  };
+};
+
 export type WithId<T> = T & { id: string };

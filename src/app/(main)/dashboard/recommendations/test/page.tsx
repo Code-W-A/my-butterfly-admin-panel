@@ -18,7 +18,12 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { useAuthUser } from "@/hooks/use-auth-user";
 import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
+import {
+  createQuestionnaireCompletion,
+  setQuestionnaireCompletionSpecialistRequestId,
+} from "@/lib/firestore/completions";
 import { listProducts } from "@/lib/firestore/products";
 import { listQuestionnaires } from "@/lib/firestore/questionnaires";
 import { listQuestions } from "@/lib/firestore/questions";
@@ -169,6 +174,7 @@ const formatTagValue = (map: VocabMap, value: string) => map[value] ?? value;
 export default function RecommendationTestPage() {
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>("questionnaire");
+  const { user: authUser } = useAuthUser();
 
   const [products, setProducts] = useState<WithId<Product>[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -186,6 +192,12 @@ export default function RecommendationTestPage() {
   const [favorites, setFavorites] = useState<string[]>([]);
   const [history, setHistory] = useState<HistorySession[]>([]);
   const [pendingSession, setPendingSession] = useState<HistorySession | null>(null);
+  const [completionId, setCompletionId] = useState<string | null>(null);
+  const [completionError, setCompletionError] = useState<string | null>(null);
+  const [completionContact, setCompletionContact] = useState({
+    name: "",
+    email: "",
+  });
   const [specialistForm, setSpecialistForm] = useState({
     name: "",
     phone: "",
@@ -333,7 +345,42 @@ export default function RecommendationTestPage() {
   const currentQuestion = orderedQuestions[currentStep];
   const canProceed = currentQuestion ? isRequiredAnswered(currentQuestion, answers[currentQuestion.id]) : false;
 
+  const logQuestionnaireCompletion = useCallback(
+    async (session: HistorySession) => {
+      try {
+        const name = completionContact.name.trim();
+        const email = completionContact.email.trim();
+        const ref = await createQuestionnaireCompletion({
+          questionnaireId: session.questionnaireId,
+          questionnaireTitle: session.questionnaireTitle,
+          user: {
+            uid: authUser?.uid,
+            isAnonymous: !authUser?.uid,
+            ...(authUser?.email ? { email: authUser.email } : {}),
+          },
+          contact: {
+            name,
+            email,
+          },
+          answers: session.answers,
+          matchProductIds: session.matchProductIds,
+        });
+        setCompletionId(ref.id);
+      } catch (err) {
+        logFirebaseError("RecommendationTest: createCompletion", err);
+      }
+    },
+    [authUser, completionContact.email, completionContact.name],
+  );
+
   const finalizeQuestionnaire = () => {
+    const name = completionContact.name.trim();
+    const email = completionContact.email.trim();
+    if (!name || !email) {
+      setCompletionError("Completează numele și emailul înainte de a vedea rezultatele.");
+      return;
+    }
+    setCompletionError(null);
     const sessionId = generateSessionId();
     const questionnaireTitle =
       questionnaires.find((item) => item.id === selectedQuestionnaireId)?.title ?? "Chestionar";
@@ -351,6 +398,14 @@ export default function RecommendationTestPage() {
     setFinalizedMatches(matches);
     setActiveTab("results");
     setRequestSent(false);
+    void logQuestionnaireCompletion(session);
+    if (!specialistForm.name || !specialistForm.email) {
+      setSpecialistForm((prev) => ({
+        ...prev,
+        name: prev.name || completionContact.name,
+        email: prev.email || completionContact.email,
+      }));
+    }
   };
 
   const restartQuestionnaire = () => {
@@ -362,6 +417,8 @@ export default function RecommendationTestPage() {
     setActiveTab("questionnaire");
     setRequestSent(false);
     setRequestError(null);
+    setCompletionId(null);
+    setCompletionError(null);
   };
 
   const toggleFavorite = (productId: string) => {
@@ -416,7 +473,7 @@ export default function RecommendationTestPage() {
       setIsSubmittingRequest(true);
       setRequestError(null);
       const userId = generateSessionId();
-      await createSpecialistRequest(userId, {
+      const requestRef = await createSpecialistRequest(userId, {
         questionnaireId: selectedQuestionnaireId,
         answers,
         note: note || undefined,
@@ -428,6 +485,9 @@ export default function RecommendationTestPage() {
         matchProductIds: finalizedMatches.map((match) => match.product.id),
         source: "recommendation_test",
       });
+      if (completionId) {
+        await setQuestionnaireCompletionSpecialistRequestId(completionId, requestRef.id);
+      }
       setRequestSent(true);
     } catch (err) {
       logFirebaseError("RecommendationTest: createSpecialistRequest", err);
@@ -731,28 +791,61 @@ export default function RecommendationTestPage() {
                         </div>
                       </div>
 
-                      <div className="flex items-center justify-between pt-4">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={() => setCurrentStep((prev) => Math.max(0, prev - 1))}
-                          disabled={currentStep === 0}
-                        >
-                          Înapoi
-                        </Button>
-                        {currentStep < orderedQuestions.length - 1 ? (
+                      <div className="space-y-3">
+                        <div className="grid gap-3 rounded-md border p-3 md:grid-cols-2">
+                          <div className="space-y-1">
+                            <Label>Nume (pentru istoric)</Label>
+                            <Input
+                              value={completionContact.name}
+                              onChange={(event) => {
+                                const value = event.target.value;
+                                setCompletionContact((prev) => ({ ...prev, name: value }));
+                                if (completionError) setCompletionError(null);
+                              }}
+                              placeholder="Nume complet"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label>Email (pentru istoric)</Label>
+                            <Input
+                              type="email"
+                              value={completionContact.email}
+                              onChange={(event) => {
+                                const value = event.target.value;
+                                setCompletionContact((prev) => ({ ...prev, email: value }));
+                                if (completionError) setCompletionError(null);
+                              }}
+                              placeholder="email@exemplu.ro"
+                            />
+                          </div>
+                          {completionError ? (
+                            <div className="text-destructive text-sm md:col-span-2">{completionError}</div>
+                          ) : null}
+                        </div>
+
+                        <div className="flex items-center justify-between">
                           <Button
                             type="button"
-                            onClick={() => setCurrentStep((prev) => Math.min(orderedQuestions.length - 1, prev + 1))}
-                            disabled={!canProceed}
+                            variant="outline"
+                            onClick={() => setCurrentStep((prev) => Math.max(0, prev - 1))}
+                            disabled={currentStep === 0}
                           >
-                            Următoarea
+                            Înapoi
                           </Button>
-                        ) : (
-                          <Button type="button" onClick={finalizeQuestionnaire} disabled={!canProceed}>
-                            Vezi rezultate
-                          </Button>
-                        )}
+                          {currentStep < orderedQuestions.length - 1 ? (
+                            <Button
+                              type="button"
+                              onClick={() => setCurrentStep((prev) => Math.min(orderedQuestions.length - 1, prev + 1))}
+                              disabled={!canProceed}
+                            >
+                              Următoarea
+                            </Button>
+                          ) : (
+                            <Button type="button" onClick={finalizeQuestionnaire} disabled={!canProceed}>
+                              Vezi rezultate
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   ) : null}

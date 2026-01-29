@@ -68,14 +68,6 @@ export function NavUser() {
                 <CircleUser />
                 Cont
               </DropdownMenuItem>
-              <DropdownMenuItem>
-                <CreditCard />
-                Facturare
-              </DropdownMenuItem>
-              <DropdownMenuItem>
-                <MessageSquareDot />
-                Notificări
-              </DropdownMenuItem>
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
             <DropdownMenuItem>

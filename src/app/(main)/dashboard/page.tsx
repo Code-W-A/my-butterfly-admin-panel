@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { KpiCardGrid } from "@/components/mybutterfly/dashboard/kpi-card-grid";
+import { QuestionnaireAnalyticsCard } from "@/components/mybutterfly/dashboard/questionnaire-analytics-card";
 import { RecentRequestsCard } from "@/components/mybutterfly/dashboard/recent-requests-card";
 import { RequestsActivityCard } from "@/components/mybutterfly/dashboard/requests-activity-card";
 import { PageHelpDialog } from "@/components/mybutterfly/help/page-help-dialog";
@@ -90,6 +91,7 @@ export default function Page() {
         </Card>
       </KpiCardGrid>
 
+      <QuestionnaireAnalyticsCard />
       <RequestsActivityCard />
       <RecentRequestsCard />
     </div>

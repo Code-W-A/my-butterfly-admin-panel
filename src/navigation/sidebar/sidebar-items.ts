@@ -1,5 +1,6 @@
 import {
   BookOpen,
+  ClipboardCheck,
   ClipboardList,
   FlaskConical,
   LayoutDashboard,
@@ -47,6 +48,11 @@ export const sidebarItems: NavGroup[] = [
         title: "Chestionare",
         url: "/dashboard/questionnaires",
         icon: ClipboardList,
+      },
+      {
+        title: "Completări",
+        url: "/dashboard/questionnaire-completions",
+        icon: ClipboardCheck,
       },
       {
         title: "Produse",

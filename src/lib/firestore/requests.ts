@@ -1,15 +1,14 @@
 import {
-  addDoc,
   collection,
   collectionGroup,
   doc,
-  documentId,
   getDocs,
   limit,
   orderBy,
   type QueryDocumentSnapshot,
   query,
   serverTimestamp,
+  setDoc,
   startAfter,
   Timestamp,
   updateDoc,
@@ -121,26 +120,39 @@ export async function createSpecialistRequest(
 ) {
   const { db } = initFirebase();
   if (!db) throw new Error("Firestore not initialized.");
-  const ref = collection(db, "users", userId, "specialistRequests");
-  return addDoc(ref, {
+  const ref = doc(collection(db, "users", userId, "specialistRequests"));
+  await setDoc(ref, {
     ...data,
     status: data.status ?? "new",
     createdAt: serverTimestamp(),
+    requestId: ref.id,
   });
+  return ref;
 }
 
 export async function getSpecialistRequestById(requestId: string): Promise<SpecialistRequestWithUser | null> {
   const { db } = initFirebase();
   if (!db) return null;
-  const q = query(collectionGroup(db, "specialistRequests"), where(documentId(), "==", requestId));
+  const q = query(collectionGroup(db, "specialistRequests"), where("requestId", "==", requestId));
   const snapshot = await getDocs(q);
   const docSnap = snapshot.docs[0];
-  if (!docSnap) return null;
-  const parentUserId = docSnap.ref.parent.parent?.id;
+  if (docSnap) {
+    const parentUserId = docSnap.ref.parent.parent?.id;
+    return {
+      id: docSnap.id,
+      userId: parentUserId ?? "",
+      ...(docSnap.data() as SpecialistRequest),
+    };
+  }
+  // Fallback for legacy docs without requestId field.
+  const legacySnapshot = await getDocs(collectionGroup(db, "specialistRequests"));
+  const legacyDoc = legacySnapshot.docs.find((item) => item.id === requestId);
+  if (!legacyDoc) return null;
+  const legacyUserId = legacyDoc.ref.parent.parent?.id;
   return {
-    id: docSnap.id,
-    userId: parentUserId ?? "",
-    ...(docSnap.data() as SpecialistRequest),
+    id: legacyDoc.id,
+    userId: legacyUserId ?? "",
+    ...(legacyDoc.data() as SpecialistRequest),
   };
 }
 

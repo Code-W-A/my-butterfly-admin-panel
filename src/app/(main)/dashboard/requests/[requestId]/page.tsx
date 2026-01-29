@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useParams, useRouter } from "next/navigation";
 
 import { zodResolver } from "@hookform/resolvers/zod";
+import { CircleHelp } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
@@ -15,17 +16,23 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
 import { listProducts } from "@/lib/firestore/products";
+import { getQuestionnaire } from "@/lib/firestore/questionnaires";
+import { listQuestions } from "@/lib/firestore/questions";
 import {
   getSpecialistRequestById,
   setSpecialistRequestReply,
   updateSpecialistRequestStatus,
 } from "@/lib/firestore/requests";
-import type { SpecialistRequest, WithId } from "@/lib/firestore/types";
+import type { Questionnaire, QuestionnaireQuestion, SpecialistRequest, WithId } from "@/lib/firestore/types";
 
 type RequestWithUser = WithId<SpecialistRequest> & { userId: string };
 
 type ProductOption = { id: string; name: string; price: number; currency: string };
+
+type RangeAnswer = { min?: string; max?: string };
 
 const formatStatus = (status: SpecialistRequest["status"]) => {
   switch (status) {
@@ -36,6 +43,18 @@ const formatStatus = (status: SpecialistRequest["status"]) => {
     case "sent":
       return "trimis";
   }
+};
+
+const formatAnswerValue = (value: unknown) => {
+  if (Array.isArray(value)) return value.map((item) => String(item)).join(", ");
+  if (typeof value === "object" && value) {
+    const range = value as RangeAnswer;
+    if (range.min !== undefined || range.max !== undefined) {
+      return `${range.min ?? "—"} - ${range.max ?? "—"}`;
+    }
+  }
+  if (value === undefined || value === null) return "—";
+  return String(value);
 };
 
 const formSchema = z.object({
@@ -51,6 +70,8 @@ export default function RequestDetailPage() {
   const requestId = params.requestId as string;
   const [request, setRequest] = useState<RequestWithUser | null>(null);
   const [products, setProducts] = useState<ProductOption[]>([]);
+  const [questionnaire, setQuestionnaire] = useState<WithId<Questionnaire> | null>(null);
+  const [questions, setQuestions] = useState<WithId<QuestionnaireQuestion>[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
 
@@ -62,6 +83,10 @@ export default function RequestDetailPage() {
     },
   });
   const isSubmitting = form.formState.isSubmitting;
+  const replyTooltipText =
+    "Răspunsul tău va fi vizibil în aplicația mobilă și trimis pe emailul introdus de utilizator.";
+
+  const productMap = useMemo(() => new Map(products.map((item) => [item.id, item])), [products]);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -78,6 +103,14 @@ export default function RequestDetailPage() {
         message: requestData.reply?.message ?? "",
         recommendedProductIds: requestData.reply?.recommendedProductIds ?? [],
       });
+      if (requestData.questionnaireId) {
+        const [questionnaireData, questionsData] = await Promise.all([
+          getQuestionnaire(requestData.questionnaireId),
+          listQuestions(requestData.questionnaireId),
+        ]);
+        setQuestionnaire(questionnaireData);
+        setQuestions(questionsData);
+      }
     }
     setIsLoading(false);
   }, [form, requestId]);
@@ -100,6 +133,26 @@ export default function RequestDetailPage() {
       message: values.message,
       recommendedProductIds: values.recommendedProductIds.length ? values.recommendedProductIds : undefined,
     });
+    if (request.contact?.email) {
+      const recommendedProducts = values.recommendedProductIds
+        .map((id) => productMap.get(id))
+        .filter(Boolean)
+        .map((item) => `${item?.name ?? "Produs"} — ${item?.price} ${item?.currency}`);
+      try {
+        await fetch("/api/requests/send-reply", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            toEmail: request.contact.email,
+            userName: request.contact.name,
+            message: values.message,
+            recommendedProducts,
+          }),
+        });
+      } catch (err) {
+        logFirebaseError("RequestDetail: sendReplyEmail", err);
+      }
+    }
     await load();
   };
 
@@ -135,19 +188,15 @@ export default function RequestDetailPage() {
         </div>
         <div>
           <div className="text-muted-foreground text-xs">Chestionar</div>
-          <div className="font-medium">{request.questionnaireId}</div>
+          <div className="font-medium">{questionnaire?.title ?? request.questionnaireId}</div>
         </div>
         <div>
           <div className="text-muted-foreground text-xs">Status</div>
           <div className="font-medium capitalize">{formatStatus(request.status)}</div>
         </div>
         <div>
-          <div className="text-muted-foreground text-xs">ID utilizator</div>
-          <div className="font-medium">{request.userId}</div>
-        </div>
-        <div>
-          <div className="text-muted-foreground text-xs">Nume</div>
-          <div className="font-medium">{request.contact?.name ?? "—"}</div>
+          <div className="text-muted-foreground text-xs">Utilizator</div>
+          <div className="font-medium">{request.contact?.name ?? request.userId}</div>
         </div>
         <div>
           <div className="text-muted-foreground text-xs">Telefon</div>
@@ -161,19 +210,37 @@ export default function RequestDetailPage() {
 
       <div className="space-y-2">
         <h2 className="font-semibold text-lg">Răspunsuri</h2>
-        <pre className="max-h-96 overflow-auto rounded-md border bg-muted p-4 text-xs">
-          {JSON.stringify(request.answers, null, 2)}
-        </pre>
+        <div className="max-h-96 space-y-3 overflow-auto rounded-md border bg-muted p-4">
+          {questions.length > 0 ? (
+            questions
+              .filter((q) => request.answers[q.id] !== undefined)
+              .sort((a, b) => a.order - b.order)
+              .map((question) => (
+                <div key={question.id} className="rounded-md border bg-background p-3">
+                  <div className="font-medium text-sm">{question.label}</div>
+                  <div className="mt-1 text-muted-foreground text-sm">
+                    {formatAnswerValue(request.answers[question.id])}
+                  </div>
+                </div>
+              ))
+          ) : (
+            <div className="text-muted-foreground text-sm">
+              {Object.keys(request.answers).length > 0
+                ? "Răspunsurile sunt disponibile, dar întrebările nu au fost găsite."
+                : "Nu există răspunsuri."}
+            </div>
+          )}
+        </div>
         {request.note ? (
           <div className="rounded-md border p-3 text-sm">
-            <div className="text-muted-foreground text-xs">Notiță</div>
-            <div>{request.note}</div>
+            <div className="font-semibold text-xs">Notițe suplimentare</div>
+            <div className="mt-1 whitespace-pre-wrap">{request.note}</div>
           </div>
         ) : null}
         {request.matchProductIds?.length ? (
           <div className="rounded-md border p-3 text-sm">
-            <div className="text-muted-foreground text-xs">Recomandări generate</div>
-            <div>{request.matchProductIds.join(", ")}</div>
+            <div className="font-semibold text-xs">Recomandări generate ({request.matchProductIds.length})</div>
+            <div className="mt-1 text-muted-foreground">{request.matchProductIds.join(", ")}</div>
           </div>
         ) : null}
       </div>
@@ -200,7 +267,23 @@ export default function RequestDetailPage() {
 
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 rounded-md border p-4">
-          <h2 className="font-semibold text-lg">Răspuns</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="font-semibold text-lg">Răspuns</h2>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Info"
+                  className="inline-flex items-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/50"
+                >
+                  <CircleHelp className="size-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={6} className="max-w-[280px] text-left">
+                {replyTooltipText}
+              </TooltipContent>
+            </Tooltip>
+          </div>
           <FormField
             control={form.control}
             name="message"

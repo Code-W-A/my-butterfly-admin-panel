@@ -1,7 +1,9 @@
 "use client";
 import * as React from "react";
 
-import { ChartBar, Forklift, Gauge, LayoutDashboard, Search, ShoppingBag } from "lucide-react";
+import { useRouter } from "next/navigation";
+
+import { ChartBar, FlaskConical, Forklift, Gauge, LayoutDashboard, Search, ShoppingBag } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -15,14 +17,16 @@ import {
 } from "@/components/ui/command";
 
 const searchItems = [
-  { group: "My Butterfly", icon: LayoutDashboard, label: "Panou" },
-  { group: "My Butterfly", icon: ShoppingBag, label: "Produse" },
-  { group: "My Butterfly", icon: Gauge, label: "Reguli" },
-  { group: "My Butterfly", icon: ChartBar, label: "Chestionare" },
-  { group: "My Butterfly", icon: Forklift, label: "Cereri" },
+  { group: "My Butterfly", icon: LayoutDashboard, label: "Panou", url: "/dashboard" },
+  { group: "My Butterfly", icon: ChartBar, label: "Chestionare", url: "/dashboard/questionnaires" },
+  { group: "My Butterfly", icon: ShoppingBag, label: "Produse", url: "/dashboard/products" },
+  { group: "My Butterfly", icon: Gauge, label: "Reguli", url: "/dashboard/products" },
+  { group: "My Butterfly", icon: Forklift, label: "Cereri", url: "/dashboard/requests" },
+  { group: "My Butterfly", icon: FlaskConical, label: "Test recomandări", url: "/dashboard/recommendations/test" },
 ];
 
 export function SearchDialog() {
+  const router = useRouter();
   const [open, setOpen] = React.useState(false);
   React.useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -59,7 +63,14 @@ export function SearchDialog() {
                 {searchItems
                   .filter((item) => item.group === group)
                   .map((item) => (
-                    <CommandItem className="!py-1.5" key={item.label} onSelect={() => setOpen(false)}>
+                    <CommandItem
+                      className="!py-1.5"
+                      key={item.label}
+                      onSelect={() => {
+                        setOpen(false);
+                        router.push(item.url);
+                      }}
+                    >
                       {item.icon && <item.icon />}
                       <span>{item.label}</span>
                     </CommandItem>

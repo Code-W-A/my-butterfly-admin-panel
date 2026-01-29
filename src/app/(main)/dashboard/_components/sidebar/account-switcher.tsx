@@ -48,14 +48,6 @@ export function AccountSwitcher() {
             <BadgeCheck />
             Cont
           </DropdownMenuItem>
-          <DropdownMenuItem>
-            <CreditCard />
-            Facturare
-          </DropdownMenuItem>
-          <DropdownMenuItem>
-            <Bell />
-            Notificări
-          </DropdownMenuItem>
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
         <DropdownMenuItem>

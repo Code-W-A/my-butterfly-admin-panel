@@ -14,16 +14,21 @@ import { listSpecialistRequestsInRange } from "@/lib/firestore/requests";
 
 type TimeRange = "7d" | "30d" | "90d";
 
+type MetricKey = "total" | "new" | "in_progress" | "sent";
+
 type RequestsChartPoint = {
   date: string; // YYYY-MM-DD (UTC)
-  requests: number;
+  total: number;
+  new: number;
+  in_progress: number;
+  sent: number;
 };
 
 const chartConfig = {
-  requests: {
-    label: "Cereri",
-    color: "var(--chart-1)",
-  },
+  total: { label: "Total", color: "var(--chart-1)" },
+  new: { label: "Noi", color: "var(--chart-2)" },
+  in_progress: { label: "În lucru", color: "var(--chart-3)" },
+  sent: { label: "Trimise", color: "var(--chart-4)" },
 } satisfies ChartConfig;
 
 function startOfDayUTC(date: Date) {
@@ -47,6 +52,7 @@ function getRangeStart(endDayUTC: Date, timeRange: TimeRange) {
 export function RequestsActivityCard() {
   const isMobile = useIsMobile();
   const [timeRange, setTimeRange] = React.useState<TimeRange>("90d");
+  const [metric, setMetric] = React.useState<MetricKey>("total");
   const [data, setData] = React.useState<RequestsChartPoint[]>([]);
   const [isLoading, setIsLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -73,18 +79,23 @@ export function RequestsActivityCard() {
           max: 2000,
         });
 
-        const counts = new Map<string, number>();
+        const counts = new Map<string, { total: number; new: number; in_progress: number; sent: number }>();
         for (const r of requests) {
           const createdAt = r.createdAt?.toDate?.();
           if (!createdAt) continue;
           const key = dateKeyUTC(createdAt);
-          counts.set(key, (counts.get(key) ?? 0) + 1);
+          const prev = counts.get(key) ?? { total: 0, new: 0, in_progress: 0, sent: 0 };
+          prev.total += 1;
+          if (r.status === "new") prev.new += 1;
+          if (r.status === "in_progress") prev.in_progress += 1;
+          if (r.status === "sent") prev.sent += 1;
+          counts.set(key, prev);
         }
 
         const points: RequestsChartPoint[] = [];
         for (let day = start; day.getTime() <= end.getTime(); day = addDaysUTC(day, 1)) {
           const key = dateKeyUTC(day);
-          points.push({ date: key, requests: counts.get(key) ?? 0 });
+          points.push({ date: key, ...(counts.get(key) ?? { total: 0, new: 0, in_progress: 0, sent: 0 }) });
         }
 
         setData(points);
@@ -100,7 +111,7 @@ export function RequestsActivityCard() {
     load();
   }, [timeRange]);
 
-  const total = React.useMemo(() => data.reduce((sum, p) => sum + p.requests, 0), [data]);
+  const total = React.useMemo(() => data.reduce((sum, p) => sum + p[metric], 0), [data, metric]);
   const defaultTooltipIndex = data.length ? Math.min(10, data.length - 1) : undefined;
 
   return (
@@ -112,13 +123,38 @@ export function RequestsActivityCard() {
           {!error ? (
             <>
               <span className="@[540px]/card:block hidden">
-                Total {total.toLocaleString("ro-RO")} în perioada selectată
+                {chartConfig[metric].label} {total.toLocaleString("ro-RO")} în perioada selectată
               </span>
-              <span className="@[540px]/card:hidden">Total {total.toLocaleString("ro-RO")}</span>
+              <span className="@[540px]/card:hidden">
+                {chartConfig[metric].label} {total.toLocaleString("ro-RO")}
+              </span>
             </>
           ) : null}
         </CardDescription>
         <CardAction>
+          <Select value={metric} onValueChange={(v) => setMetric(v as MetricKey)}>
+            <SelectTrigger
+              className="w-40 **:data-[slot=select-value]:block **:data-[slot=select-value]:truncate"
+              size="sm"
+              aria-label="Selectează metrica"
+            >
+              <SelectValue placeholder="Metrică" />
+            </SelectTrigger>
+            <SelectContent className="rounded-xl">
+              <SelectItem value="total" className="rounded-lg">
+                Total
+              </SelectItem>
+              <SelectItem value="new" className="rounded-lg">
+                Noi
+              </SelectItem>
+              <SelectItem value="in_progress" className="rounded-lg">
+                În lucru
+              </SelectItem>
+              <SelectItem value="sent" className="rounded-lg">
+                Trimise
+              </SelectItem>
+            </SelectContent>
+          </Select>
           <ToggleGroup
             type="single"
             value={timeRange}
@@ -158,9 +194,21 @@ export function RequestsActivityCard() {
         <ChartContainer config={chartConfig} className="aspect-auto h-62 w-full">
           <AreaChart data={data}>
             <defs>
-              <linearGradient id="fillRequests" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="var(--color-requests)" stopOpacity={0.9} />
-                <stop offset="95%" stopColor="var(--color-requests)" stopOpacity={0.1} />
+              <linearGradient id="fill-total" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="var(--color-total)" stopOpacity={0.9} />
+                <stop offset="95%" stopColor="var(--color-total)" stopOpacity={0.1} />
+              </linearGradient>
+              <linearGradient id="fill-new" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="var(--color-new)" stopOpacity={0.9} />
+                <stop offset="95%" stopColor="var(--color-new)" stopOpacity={0.1} />
+              </linearGradient>
+              <linearGradient id="fill-in_progress" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="var(--color-in_progress)" stopOpacity={0.9} />
+                <stop offset="95%" stopColor="var(--color-in_progress)" stopOpacity={0.1} />
+              </linearGradient>
+              <linearGradient id="fill-sent" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="var(--color-sent)" stopOpacity={0.9} />
+                <stop offset="95%" stopColor="var(--color-sent)" stopOpacity={0.1} />
               </linearGradient>
             </defs>
             <CartesianGrid vertical={false} />
@@ -188,10 +236,10 @@ export function RequestsActivityCard() {
               }
             />
             <Area
-              dataKey="requests"
+              dataKey={metric}
               type="monotone"
-              fill="url(#fillRequests)"
-              stroke="var(--color-requests)"
+              fill={`url(#fill-${metric})`}
+              stroke={`var(--color-${metric})`}
               isAnimationActive={!isLoading}
             />
           </AreaChart>

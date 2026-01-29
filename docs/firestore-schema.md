@@ -41,6 +41,16 @@ Subcollection: `questionnaires/{questionnaireId}/questions/{questionId}`
 - `createdAt`: timestamp (serverTimestamp)
 - `updatedAt`: timestamp (serverTimestamp)
 
+### 2.1) `questionnaireCompletions/{completionId}`
+- `createdAt`: timestamp
+- `questionnaireId`: string
+- `questionnaireTitle`: string
+- `user`: `{ uid?: string; isAnonymous: boolean; email?: string }`
+- `contact`: `{ name: string; email: string; phone?: string }`
+- `answers`: object
+- `matchProductIds?`: string[]
+- `specialistRequestId?`: string
+
 ### 3) `users/{uid}`
 - `createdAt`: timestamp
 - `lastSeenAt`: timestamp
@@ -57,6 +67,20 @@ Subcollection: `users/{uid}/specialistRequests/{requestId}`
 - `source?`: `"recommendation_test"`
 - `reply?`: `{ message: string; recommendedProductIds?: string[]; sentAt?: timestamp }`
 
+Subcollection: `users/{uid}/questionnaireAnalyticsDaily/{docId}`
+- `docId`: `${YYYY-MM-DD}_${questionnaireId}`
+- `day`: timestamp (start-of-day UTC)
+- `questionnaireId`: string
+- `starts`: number
+- `completes`: number
+- `answers?`:
+  - `level?`: `{ [value: string]: number }`
+  - `style?`: `{ [value: string]: number }`
+  - `distance?`: `{ [value: string]: number }`
+  - `priority?`: `{ [value: string]: number }`
+  - `preferences?`: `{ [value: string]: number }`
+  - `budgetBuckets?`: `{ [bucket: string]: number }` (bucketed by max/budget, step 100)
+
 ### Admin allowlist: `admins/{uid}`
 - `active`: boolean
 - `role`: `"admin" | "editor"`
@@ -68,8 +92,11 @@ Subcollection: `users/{uid}/specialistRequests/{requestId}`
 Used to signal content updates to the mobile app (cache invalidation).
 
 ## Suggested Indexes
+- `questionnaireCompletions` ordered by `createdAt desc`
+- `questionnaireCompletions` with `where("questionnaireId","==",...)` + `orderBy("createdAt","desc")`
 - `collectionGroup("specialistRequests")` with `where("status","==","new")` + `orderBy("createdAt","desc")`
 - `collectionGroup("specialistRequests")` with `orderBy("createdAt","desc")`
+- `collectionGroup("questionnaireAnalyticsDaily")` with `where("questionnaireId","==",...)` + `orderBy("day","asc")` (and day range filters)
 - `questionnaires` ordered by `updatedAt`
 - `products` ordered by `updatedAt`
 

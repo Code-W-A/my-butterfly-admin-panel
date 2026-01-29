@@ -151,7 +151,8 @@ export default function RequestsPage() {
               <TableHead>Status</TableHead>
               <TableHead>Chestionar</TableHead>
               <TableHead>Nume</TableHead>
-              <TableHead>Telefon / Email</TableHead>
+              <TableHead>Telefon</TableHead>
+              <TableHead>Email</TableHead>
               <TableHead className="text-right">Detalii</TableHead>
             </TableRow>
           </TableHeader>
@@ -159,10 +160,11 @@ export default function RequestsPage() {
             {isLoading ? (
               ["s1", "s2", "s3", "s4", "s5", "s6"].map((rowId) => (
                 <TableRow key={rowId}>
-                  <TableCell colSpan={6}>
-                    <div className="grid gap-3 md:grid-cols-6">
+                  <TableCell colSpan={7}>
+                    <div className="grid gap-3 md:grid-cols-7">
                       <Skeleton className="h-4 w-32" />
                       <Skeleton className="h-4 w-20" />
+                      <Skeleton className="h-4 w-28" />
                       <Skeleton className="h-4 w-28" />
                       <Skeleton className="h-4 w-28" />
                       <Skeleton className="h-4 w-28" />
@@ -173,7 +175,7 @@ export default function RequestsPage() {
               ))
             ) : items.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-muted-foreground text-sm">
+                <TableCell colSpan={7} className="text-muted-foreground text-sm">
                   Nu s-au găsit cereri.
                 </TableCell>
               </TableRow>
@@ -188,9 +190,8 @@ export default function RequestsPage() {
                   <TableCell>
                     {item.contact?.name ? <div className="font-medium text-sm">{item.contact.name}</div> : "—"}
                   </TableCell>
-                  <TableCell className="text-muted-foreground text-sm">
-                    {item.contact?.phone ?? item.contact?.email ?? "—"}
-                  </TableCell>
+                  <TableCell className="text-muted-foreground text-sm">{item.contact?.phone ?? "—"}</TableCell>
+                  <TableCell className="text-muted-foreground text-sm">{item.contact?.email ?? "—"}</TableCell>
                   <TableCell className="text-right">
                     <Link
                       className="text-primary underline-offset-4 hover:underline"

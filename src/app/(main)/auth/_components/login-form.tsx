@@ -93,25 +93,7 @@ export function LoginForm() {
             </FormItem>
           )}
         />
-        <FormField
-          control={form.control}
-          name="remember"
-          render={({ field }) => (
-            <FormItem className="flex flex-row items-center">
-              <FormControl>
-                <Checkbox
-                  id="login-remember"
-                  checked={field.value}
-                  onCheckedChange={field.onChange}
-                  className="size-4"
-                />
-              </FormControl>
-              <FormLabel htmlFor="login-remember" className="ml-1 font-medium text-muted-foreground text-sm">
-                Ține-mă minte 30 de zile
-              </FormLabel>
-            </FormItem>
-          )}
-        />
+
         <Button className="w-full" type="submit">
           Autentificare
         </Button>

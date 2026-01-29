@@ -432,22 +432,22 @@ export function ProductForm({
 
         <Card data-tour="product-scenarios">
           <CardHeader>
-            <CardTitle>Scenarii recomandare</CardTitle>
+            <CardTitle>Reguli recomandare</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="text-muted-foreground text-sm">
-              Aici definești când acest produs este recomandat. Scenariile se salvează odată cu produsul și se folosesc
+              Aici definești când acest produs este recomandat. Regulile se salvează odată cu produsul și se folosesc
               direct în Test recomandări și în aplicația mobilă.
             </div>
             {scenarios.length === 0 ? (
-              <div className="text-muted-foreground text-sm">Nu există scenarii încă.</div>
+              <div className="text-muted-foreground text-sm">Nu există reguli încă.</div>
             ) : (
               <div className="space-y-3">
                 {scenarios.map((scenario, index) => (
                   <div key={scenario.id} className="rounded-md border p-3">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className="font-medium">Scenariu {index + 1}</div>
+                        <div className="font-medium">Regulă {index + 1}</div>
                         <div className="text-muted-foreground text-xs">{formatScenarioSummary(scenario)}</div>
                         <div className="text-muted-foreground text-xs">
                           {scenario.active ? "Activ" : "Inactiv"} • order: {scenario.order}
@@ -480,7 +480,7 @@ export function ProductForm({
                 disabled={isSubmitting || isUploading}
               >
                 <Plus className="mr-2 size-4" />
-                Adaugă scenariu
+                Adaugă regulă
               </Button>
             </div>
           </CardContent>
@@ -494,11 +494,11 @@ export function ProductForm({
           }}
         >
           <DialogContent className="sm:max-w-3xl">
-            <DialogTitle>Editează scenariu</DialogTitle>
+            <DialogTitle>Editează regulă</DialogTitle>
             {editingScenarioIndex !== null ? (
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <div className="text-muted-foreground text-sm">Scenariu {editingScenarioIndex + 1}</div>
+                  <div className="text-muted-foreground text-sm">Regulă {editingScenarioIndex + 1}</div>
                   <Switch
                     checked={scenarios[editingScenarioIndex]?.active ?? false}
                     onCheckedChange={(checked) => updateScenario(editingScenarioIndex, { active: checked })}
