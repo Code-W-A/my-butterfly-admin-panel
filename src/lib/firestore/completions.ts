@@ -76,3 +76,10 @@ export async function setQuestionnaireCompletionSpecialistRequestId(completionId
   const ref = doc(db, "questionnaireCompletions", completionId);
   return updateDoc(ref, { specialistRequestId: requestId });
 }
+
+export async function setQuestionnaireCompletionMatchProductIds(completionId: string, matchProductIds: string[]) {
+  const { db } = initFirebase();
+  if (!db) throw new Error("Firestore not initialized.");
+  const ref = doc(db, "questionnaireCompletions", completionId);
+  return updateDoc(ref, { matchProductIds });
+}

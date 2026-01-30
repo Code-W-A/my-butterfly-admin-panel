@@ -4,11 +4,14 @@ import { useEffect, useState } from "react";
 
 import { useParams, useRouter } from "next/navigation";
 
+import { Search } from "lucide-react";
+
 import { PageHelpDialog } from "@/components/mybutterfly/help/page-help-dialog";
 import { PrestashopProductPicker } from "@/components/mybutterfly/products/prestashop-product-picker";
 import { ProductForm } from "@/components/mybutterfly/products/product-form";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getProduct, updateProduct } from "@/lib/firestore/products";
 import type { Product, WithId } from "@/lib/firestore/types";
@@ -19,6 +22,8 @@ type PrestashopDetails = {
   price: number;
   currency: "EUR" | "RON";
   active: boolean;
+  prestashopFull?: Record<string, unknown>;
+  imageUrls?: string[];
   imageUrl?: string;
   imageId?: number;
   productUrl?: string;
@@ -46,6 +51,8 @@ export default function ProductDetailPage() {
   } | null>(null);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [prestashopFull, setPrestashopFull] = useState<Record<string, unknown> | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -57,52 +64,59 @@ export default function ProductDetailPage() {
 
   const isPrestashopProduct = product?.source?.provider === "prestashop" || productId.startsWith("ps_");
 
-  const handleSelectPrestashop = async (item: {
-    id: string;
-    name: string;
-    price: number;
-    active: boolean;
-    imageUrl?: string;
-    imageId?: number;
-    productUrl?: string;
-  }) => {
+  const handleSelectPrestashop = async (item: { id: string; name: string; price: number; reference?: string }) => {
     setIsLoadingDetails(true);
     try {
       setPrefillValues({
         name: item.name,
         price: item.price,
         currency: "RON",
-        active: item.active,
-        ...(item.imageUrl ? { imageUrls: [item.imageUrl], imageUrl: item.imageUrl } : {}),
-        ...(item.productUrl ? { productUrl: item.productUrl } : {}),
       });
       setPrestashopMeta({
         productId: Number(item.id),
-        imageId: item.imageId,
-        imageUrl: item.imageUrl,
-        productUrl: item.productUrl,
       });
 
       const response = await fetch(`/api/prestashop/products/${item.id}`);
       const data = (await response.json()) as PrestashopDetails;
-      setPrefillValues({
-        name: data.name ?? item.name,
-        price: data.price ?? item.price,
-        currency: "RON",
-        active: data.active ?? item.active,
-        ...(data.imageUrl
-          ? { imageUrls: [data.imageUrl], imageUrl: data.imageUrl }
-          : item.imageUrl
-            ? { imageUrls: [item.imageUrl], imageUrl: item.imageUrl }
-            : {}),
-        ...(data.productUrl ? { productUrl: data.productUrl } : item.productUrl ? { productUrl: item.productUrl } : {}),
+      console.log("[prestashop] details response", data);
+      const resolvedImageUrls =
+        data.imageUrls && data.imageUrls.length > 0 ? data.imageUrls : data.imageUrl ? [data.imageUrl] : [];
+      console.log("[prestashop] resolved images", resolvedImageUrls);
+      setPrestashopFull(data.prestashopFull ?? null);
+      setPrefillValues((prev) => {
+        const next = { ...(prev ?? {}) } as {
+          name?: string;
+          price?: number;
+          currency?: "EUR" | "RON";
+          active?: boolean;
+          imageUrls?: string[];
+          imageUrl?: string;
+          productUrl?: string;
+        };
+        const resolvedName = data.name?.trim() ? data.name : item.name;
+        if (resolvedName.trim()) next.name = resolvedName;
+        const resolvedPrice = data.price && data.price > 0 ? data.price : item.price;
+        if (resolvedPrice !== undefined) next.price = resolvedPrice;
+        next.currency = "RON";
+        if (data.active !== undefined) next.active = data.active;
+        if (resolvedImageUrls.length) {
+          next.imageUrls = resolvedImageUrls;
+          next.imageUrl = resolvedImageUrls[0];
+        }
+        if (data.productUrl) next.productUrl = data.productUrl;
+        return next;
       });
       setPrestashopMeta({
         productId: Number(data.id ?? item.id),
-        imageId: data.imageId ?? item.imageId,
-        imageUrl: data.imageUrl ?? item.imageUrl,
-        productUrl: data.productUrl ?? item.productUrl,
+        imageId: data.imageId,
+        imageUrl: data.imageUrl ?? resolvedImageUrls[0],
+        productUrl: data.productUrl,
       });
+      if (data.productUrl) {
+        updateProduct(productId, { productUrl: data.productUrl }).catch(() => {
+          // ignore save errors for link updates
+        });
+      }
     } finally {
       setIsLoadingDetails(false);
     }
@@ -151,6 +165,11 @@ export default function ProductDetailPage() {
         prefillValues={prefillValues}
         imageSource={isPrestashopProduct ? "prestashop" : "manual"}
         onSubmit={async (values) => {
+          const prestashopValue = prestashopMeta?.imageId
+            ? prestashopMeta
+            : prestashopMeta
+              ? { productId: prestashopMeta.productId }
+              : product.prestashop;
           const next = {
             ...values,
             ...(isPrestashopProduct
@@ -159,9 +178,10 @@ export default function ProductDetailPage() {
                     provider: "prestashop" as const,
                     prestashopProductId: String(prestashopMeta?.productId ?? product.source?.prestashopProductId ?? ""),
                   },
-                  prestashop: prestashopMeta ?? product.prestashop,
+                  prestashop: prestashopValue,
                   imageUrl: prefillValues?.imageUrl ?? product.imageUrl,
                   productUrl: prefillValues?.productUrl ?? product.productUrl,
+                  ...(prestashopFull ? { prestashopFull } : {}),
                 }
               : {}),
           };
@@ -171,21 +191,39 @@ export default function ProductDetailPage() {
         onCancel={() => router.push("/dashboard/products")}
       />
 
-      <Dialog open={isPickerOpen} onOpenChange={setIsPickerOpen}>
-        <DialogContent className="h-[90vh] w-[90vw] max-w-[90vw] p-6">
-          <DialogHeader>
+      <Dialog
+        open={isPickerOpen}
+        onOpenChange={(open) => {
+          setIsPickerOpen(open);
+          if (!open) setSearchQuery("");
+        }}
+      >
+        <DialogContent className="flex h-[90vh] w-[90vw] max-w-[90vw] flex-col gap-4 p-6">
+          <DialogHeader className="shrink-0">
             <DialogTitle>Reimportează din PrestaShop</DialogTitle>
             <DialogDescription>Selectează produsul pentru reîncărcarea datelor.</DialogDescription>
           </DialogHeader>
-          <PrestashopProductPicker
-            onSelect={(selected) => {
-              void handleSelectPrestashop(selected);
-              setIsPickerOpen(false);
-            }}
-            selectedId={prestashopMeta?.productId ? String(prestashopMeta.productId) : undefined}
-            placeholder="Caută produs în PrestaShop"
-            inline
-          />
+          <div className="relative shrink-0">
+            <Search className="absolute top-3 left-3 size-4 text-muted-foreground" />
+            <Input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Caută produs în PrestaShop"
+              className="h-11 pl-9"
+            />
+          </div>
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <PrestashopProductPicker
+              onSelect={(selected) => {
+                void handleSelectPrestashop(selected);
+                setIsPickerOpen(false);
+              }}
+              selectedId={prestashopMeta?.productId ? String(prestashopMeta.productId) : undefined}
+              query={searchQuery}
+              onQueryChange={setSearchQuery}
+              inline
+            />
+          </div>
         </DialogContent>
       </Dialog>
     </div>

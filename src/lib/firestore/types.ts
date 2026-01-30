@@ -48,6 +48,7 @@ export type Product = {
   attributes: { control?: number; spin?: number; speed?: number; weight?: number };
   source?: { provider: "prestashop"; prestashopProductId: string; lastSyncAt?: Timestamp };
   prestashop?: { productId: number; imageId?: number };
+  prestashopFull?: Record<string, unknown>;
   recommendationScenarios?: ProductRecommendationScenario[];
   createdAt: Timestamp;
   updatedAt: Timestamp;
@@ -57,12 +58,9 @@ export type ProductRecommendationScenario = {
   active: boolean;
   order: number;
   conditions: {
-    level?: string[];
-    style?: string[];
-    distance?: string[];
-    priority?: string[];
     budgetMin?: number;
     budgetMax?: number;
+    [key: string]: string[] | number | undefined;
   };
   explanationTemplate: string;
 };

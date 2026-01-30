@@ -10,9 +10,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
-import { listQuestionnaires } from "@/lib/firestore/questionnaires";
+import { getQuestionnaire, listQuestionnaires } from "@/lib/firestore/questionnaires";
 import { listSpecialistRequestsPage } from "@/lib/firestore/requests";
-import type { Questionnaire, SpecialistRequest, WithId } from "@/lib/firestore/types";
+import type { SpecialistRequest, WithId } from "@/lib/firestore/types";
 
 type RequestItem = WithId<SpecialistRequest> & { userId: string };
 
@@ -29,7 +29,7 @@ const formatStatus = (status: SpecialistRequest["status"]) => {
 
 export default function RequestsPage() {
   const [items, setItems] = useState<RequestItem[]>([]);
-  const [questionnaires, setQuestionnaires] = useState<WithId<Questionnaire>[]>([]);
+  const [questionnaireTitles, setQuestionnaireTitles] = useState<Record<string, string>>({});
   const [statusFilter, setStatusFilter] = useState<"all" | SpecialistRequest["status"]>("all");
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -52,7 +52,7 @@ export default function RequestsPage() {
         setItems(data);
         setCursor(nextCursor);
         setHasMore(Boolean(nextCursor));
-        setQuestionnaires(questionnairesData);
+        setQuestionnaireTitles(Object.fromEntries(questionnairesData.map((q) => [q.id, q.title])));
         setIsLoading(false);
       } catch (err) {
         logFirebaseError("Requests: loadFirstPage", err);
@@ -97,7 +97,7 @@ export default function RequestsPage() {
       setItems(data);
       setCursor(nextCursor);
       setHasMore(Boolean(nextCursor));
-      setQuestionnaires(questionnairesData);
+      setQuestionnaireTitles(Object.fromEntries(questionnairesData.map((q) => [q.id, q.title])));
       setIsLoading(false);
     } catch (err) {
       logFirebaseError("Requests: refresh", err);
@@ -106,6 +106,25 @@ export default function RequestsPage() {
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    const missingIds = Array.from(
+      new Set(items.map((item) => item.questionnaireId).filter((id) => id && !questionnaireTitles[id])),
+    );
+    if (missingIds.length === 0) return;
+    Promise.all(missingIds.map((id) => getQuestionnaire(id)))
+      .then((results) => {
+        const resolved = results.filter(Boolean) as WithId<Questionnaire>[];
+        if (resolved.length === 0) return;
+        setQuestionnaireTitles((prev) => ({
+          ...prev,
+          ...Object.fromEntries(resolved.map((q) => [q.id, q.title])),
+        }));
+      })
+      .catch(() => {
+        // ignore missing/unauthorized questionnaires
+      });
+  }, [items, questionnaireTitles]);
 
   return (
     <div className="space-y-6">
@@ -184,9 +203,7 @@ export default function RequestsPage() {
                 <TableRow key={`${item.userId}-${item.id}`}>
                   <TableCell>{item.createdAt ? item.createdAt.toDate().toLocaleString() : "—"}</TableCell>
                   <TableCell className="capitalize">{formatStatus(item.status)}</TableCell>
-                  <TableCell>
-                    {questionnaires.find((q) => q.id === item.questionnaireId)?.title ?? item.questionnaireId ?? "—"}
-                  </TableCell>
+                  <TableCell>{questionnaireTitles[item.questionnaireId] ?? "—"}</TableCell>
                   <TableCell>
                     {item.contact?.name ? <div className="font-medium text-sm">{item.contact.name}</div> : "—"}
                   </TableCell>

@@ -121,7 +121,11 @@ export default function QuestionnaireCompletionsPage() {
     }
   };
 
-  const questionnaireTitle = (id?: string) => questionnaires.find((q) => q.id === id)?.title ?? id ?? "—";
+  const questionnaireTitle = (item: CompletionItem) =>
+    item.questionnaireTitle?.trim() ||
+    questionnaires.find((q) => q.id === item.questionnaireId)?.title ||
+    item.questionnaireId ||
+    "—";
 
   const handleClearFilters = () => {
     setQuestionnaireId("all");
@@ -145,7 +149,7 @@ export default function QuestionnaireCompletionsPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <PageHelpDialog helpKey="requests.list" />
+          <PageHelpDialog helpKey="questionnaire-completions.list" />
           <Button type="button" variant="outline" onClick={handleRefresh} disabled={isLoading}>
             {isLoading ? "Se încarcă..." : "Reîmprospătează"}
           </Button>
@@ -250,11 +254,11 @@ export default function QuestionnaireCompletionsPage() {
               items.map((item) => (
                 <TableRow key={item.id}>
                   <TableCell>{item.createdAt ? item.createdAt.toDate().toLocaleString() : "—"}</TableCell>
-                  <TableCell className="max-w-[16rem] truncate">{questionnaireTitle(item.questionnaireId)}</TableCell>
+                  <TableCell className="max-w-[16rem] truncate">{questionnaireTitle(item)}</TableCell>
                   <TableCell>{item.contact?.name ?? "—"}</TableCell>
                   <TableCell className="text-muted-foreground text-sm">{item.contact?.email ?? "—"}</TableCell>
                   <TableCell className="text-muted-foreground text-sm">
-                    {item.user?.isAnonymous ? "Anonymous" : (item.user?.uid ?? "—")}
+                    {item.user?.isAnonymous ? "Anonim" : (item.user?.email ?? item.contact?.name ?? "Autentificat")}
                   </TableCell>
                   <TableCell>{item.specialistRequestId ? "Da" : "—"}</TableCell>
                   <TableCell>{item.matchProductIds?.length ?? 0}</TableCell>

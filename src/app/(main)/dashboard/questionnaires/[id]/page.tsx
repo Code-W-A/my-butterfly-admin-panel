@@ -61,6 +61,11 @@ export default function QuestionnaireDetailPage() {
     () => (selectedId ? (questions.find((item) => item.id === selectedId) ?? null) : null),
     [questions, selectedId],
   );
+  const nextQuestionOrder = useMemo(() => {
+    if (questions.length === 0) return 0;
+    const maxOrder = Math.max(...questions.map((q) => Number(q.order ?? 0)));
+    return Number.isFinite(maxOrder) ? maxOrder + 1 : 0;
+  }, [questions]);
 
   const load = useCallback(async () => {
     const [questionnaireData, questionsData] = await Promise.all([
@@ -223,6 +228,7 @@ export default function QuestionnaireDetailPage() {
           <QuestionEditor
             questionnaireId={questionnaireId}
             selected={selectedQuestion}
+            defaultOrder={nextQuestionOrder}
             onSaved={async () => {
               await load();
               setSelectedId(null);

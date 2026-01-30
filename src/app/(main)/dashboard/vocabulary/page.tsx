@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import { z } from "zod";
 
+import { PageHelpDialog } from "@/components/mybutterfly/help/page-help-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -16,6 +17,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -105,7 +107,10 @@ function EditOptionDialog({
         </DialogHeader>
         <div className="grid gap-3 md:grid-cols-2">
           <div className="space-y-2">
-            <Label>Label</Label>
+            <Label className="flex items-center gap-2">
+              <InfoTip text="Textul pe care îl vei vedea în listă (cum apare pentru utilizator)." />
+              Label
+            </Label>
             <Input
               value={draft.label}
               onChange={(e) => setDraft((prev) => ({ ...prev, label: e.target.value }))}
@@ -113,7 +118,10 @@ function EditOptionDialog({
             />
           </div>
           <div className="space-y-2">
-            <Label>Order (opțional)</Label>
+            <Label className="flex items-center gap-2">
+              <InfoTip text="Controlează ordinea în listă. Un număr mai mic înseamnă că apare mai sus." />
+              Order (opțional)
+            </Label>
             <Input
               value={draft.order}
               onChange={(e) => setDraft((prev) => ({ ...prev, order: e.target.value }))}
@@ -121,7 +129,10 @@ function EditOptionDialog({
             />
           </div>
           <div className="flex items-end justify-between rounded-md border p-3 md:col-span-2">
-            <Label>Activ</Label>
+            <Label className="flex items-center gap-2">
+              <InfoTip text="Dacă este oprit, valoarea nu mai apare utilizatorilor (dar rămâne în istoric)." />
+              Activ
+            </Label>
             <Switch
               checked={draft.active}
               onCheckedChange={(checked) => setDraft((prev) => ({ ...prev, active: checked }))}
@@ -222,6 +233,10 @@ export default function VocabularyPage() {
   }, [load]);
 
   const isReady = isInitialized === true;
+  const hasVocabularyValues = useMemo(
+    () => Object.values(optionsByKey).some((options) => (options ?? []).length > 0),
+    [optionsByKey],
+  );
 
   const sortedOptionsByKey = useMemo(() => {
     const result: Record<string, VocabularyOption[]> = {};
@@ -281,7 +296,7 @@ export default function VocabularyPage() {
           <Button type="button" variant="outline" onClick={() => load()} disabled={isBusy || isInitialized === null}>
             Reîmprospătează
           </Button>
-          {isDebugSeedEnabled && isInitialized === true ? (
+          {isDebugSeedEnabled && isInitialized === true && !hasVocabularyValues ? (
             <Button
               type="button"
               variant="outline"
@@ -304,6 +319,7 @@ export default function VocabularyPage() {
               Adaugă valori inițiale
             </Button>
           ) : null}
+          <PageHelpDialog helpKey="vocabulary" />
           {isInitialized === false ? (
             <Button
               type="button"
@@ -515,7 +531,10 @@ export default function VocabularyPage() {
           </DialogHeader>
           <div className="grid gap-3 md:grid-cols-2">
             <div className="space-y-2">
-              <Label>Label</Label>
+              <Label className="flex items-center gap-2">
+                <InfoTip text="Textul pe care îl vei vedea în listă (cum apare pentru utilizator)." />
+                Label
+              </Label>
               <Input
                 value={addDraft.label}
                 onChange={(e) => setAddDraft((prev) => ({ ...prev, label: e.target.value }))}
@@ -527,7 +546,10 @@ export default function VocabularyPage() {
               </div>
             </div>
             <div className="space-y-2">
-              <Label>Order (opțional)</Label>
+              <Label className="flex items-center gap-2">
+                <InfoTip text="Controlează ordinea în listă. Un număr mai mic înseamnă că apare mai sus." />
+                Order (opțional)
+              </Label>
               <Input
                 value={addDraft.order}
                 onChange={(e) => setAddDraft((prev) => ({ ...prev, order: e.target.value }))}
@@ -535,7 +557,10 @@ export default function VocabularyPage() {
               />
             </div>
             <div className="flex items-end justify-between rounded-md border p-3 md:col-span-2">
-              <Label>Activ</Label>
+              <Label className="flex items-center gap-2">
+                <InfoTip text="Dacă este oprit, valoarea nu mai apare utilizatorilor (dar rămâne în istoric)." />
+                Activ
+              </Label>
               <Switch
                 checked={addDraft.active}
                 onCheckedChange={(checked) => setAddDraft((prev) => ({ ...prev, active: checked }))}
@@ -595,7 +620,10 @@ export default function VocabularyPage() {
           </DialogHeader>
           <div className="grid gap-3 md:grid-cols-2">
             <div className="space-y-2 md:col-span-2">
-              <Label>Titlu</Label>
+              <Label className="flex items-center gap-2">
+                <InfoTip text="Numele categoriei așa cum apare în admin (ex: Nivel, Stil, Distanță)." />
+                Titlu
+              </Label>
               <Input
                 value={categoryDraft.title}
                 onChange={(e) => setCategoryDraft((prev) => ({ ...prev, title: e.target.value }))}
@@ -604,7 +632,10 @@ export default function VocabularyPage() {
             </div>
             {!editingCategory ? (
               <div className="space-y-2 md:col-span-2">
-                <Label>Cheie tehnică (opțional)</Label>
+                <Label className="flex items-center gap-2">
+                  <InfoTip text="Un identificator intern (folosit în reguli și chestionare). De obicei îl poți lăsa gol și se generează automat." />
+                  Cheie tehnică (opțional)
+                </Label>
                 <Input
                   value={categoryDraft.key}
                   onChange={(e) => setCategoryDraft((prev) => ({ ...prev, key: e.target.value }))}
@@ -614,7 +645,10 @@ export default function VocabularyPage() {
               </div>
             ) : null}
             <div className="space-y-2 md:col-span-2">
-              <Label>Descriere</Label>
+              <Label className="flex items-center gap-2">
+                <InfoTip text="O descriere scurtă, ca să fie clar ce conține categoria (opțional)." />
+                Descriere
+              </Label>
               <Input
                 value={categoryDraft.description}
                 onChange={(e) => setCategoryDraft((prev) => ({ ...prev, description: e.target.value }))}
@@ -622,7 +656,10 @@ export default function VocabularyPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Order</Label>
+              <Label className="flex items-center gap-2">
+                <InfoTip text="Ordinea în care apar categoriile pe pagină și în liste. Mai mic = mai sus." />
+                Order
+              </Label>
               <Input
                 value={categoryDraft.order}
                 onChange={(e) => setCategoryDraft((prev) => ({ ...prev, order: e.target.value }))}
@@ -630,7 +667,10 @@ export default function VocabularyPage() {
               />
             </div>
             <div className="flex items-end justify-between rounded-md border p-3">
-              <Label>Activ</Label>
+              <Label className="flex items-center gap-2">
+                <InfoTip text="Dacă este oprită, categoria poate fi ascunsă/evitată în selecții, dar datele existente rămân." />
+                Activ
+              </Label>
               <Switch
                 checked={categoryDraft.active}
                 onCheckedChange={(checked) => setCategoryDraft((prev) => ({ ...prev, active: checked }))}

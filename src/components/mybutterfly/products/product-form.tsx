@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import Image from "next/image";
 
@@ -14,13 +14,15 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
 import { deleteProductImage, uploadProductImage } from "@/lib/firebase/storage.client";
-import type { Product, ProductRecommendationScenario } from "@/lib/firestore/types";
+import type { Product, ProductRecommendationScenario, WithId } from "@/lib/firestore/types";
+import { listVocabularyKeys, type VocabularyCategory } from "@/lib/firestore/vocabulary";
 
 const optionalNumber = z.preprocess(
   (value) => (value === "" || value === null || value === undefined ? undefined : Number(value)),
@@ -81,14 +83,7 @@ type ScenarioDraft = {
   active: boolean;
   order: number;
   explanationTemplate: string;
-  conditions: {
-    level: string[];
-    style: string[];
-    distance: string[];
-    priority: string[];
-    budgetMin?: number;
-    budgetMax?: number;
-  };
+  conditions: Record<string, string[]>;
 };
 
 const generateClientId = () => {
@@ -96,42 +91,47 @@ const generateClientId = () => {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 };
 
-const toScenarioDraft = (scenario: ProductRecommendationScenario): ScenarioDraft => ({
-  id: generateClientId(),
-  active: scenario.active,
-  order: scenario.order,
-  explanationTemplate: scenario.explanationTemplate ?? "",
-  conditions: {
-    level: scenario.conditions.level ?? [],
-    style: scenario.conditions.style ?? [],
-    distance: scenario.conditions.distance ?? [],
-    priority: scenario.conditions.priority ?? [],
-    budgetMin: scenario.conditions.budgetMin,
-    budgetMax: scenario.conditions.budgetMax,
-  },
-});
+const normalizeConditionValues = (value: unknown) => {
+  if (Array.isArray(value)) return value.filter((item) => typeof item === "string" && item.trim());
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  return [];
+};
 
-const buildConditions = (scenario: ScenarioDraft): ProductRecommendationScenario["conditions"] => ({
-  ...(scenario.conditions.level.length ? { level: scenario.conditions.level } : {}),
-  ...(scenario.conditions.style.length ? { style: scenario.conditions.style } : {}),
-  ...(scenario.conditions.distance.length ? { distance: scenario.conditions.distance } : {}),
-  ...(scenario.conditions.priority.length ? { priority: scenario.conditions.priority } : {}),
-  ...(scenario.conditions.budgetMin !== undefined ? { budgetMin: scenario.conditions.budgetMin } : {}),
-  ...(scenario.conditions.budgetMax !== undefined ? { budgetMax: scenario.conditions.budgetMax } : {}),
-});
-
-const formatScenarioSummary = (scenario: ScenarioDraft) => {
-  const parts: string[] = [];
-  const { conditions } = scenario;
-  if (conditions.level.length) parts.push(`Nivel: ${conditions.level.length}`);
-  if (conditions.style.length) parts.push(`Stil: ${conditions.style.length}`);
-  if (conditions.distance.length) parts.push(`Distanță: ${conditions.distance.length}`);
-  if (conditions.priority.length) parts.push(`Prioritate: ${conditions.priority.length}`);
-  if (conditions.budgetMin !== undefined || conditions.budgetMax !== undefined) {
-    const min = conditions.budgetMin ?? "—";
-    const max = conditions.budgetMax ?? "—";
-    parts.push(`Buget: ${min} - ${max}`);
+const buildConditionMap = (keys: string[], source: ProductRecommendationScenario["conditions"] | undefined) => {
+  const result: Record<string, string[]> = {};
+  keys.forEach((key) => {
+    const value = source?.[key];
+    result[key] = normalizeConditionValues(value);
+  });
+  if (source) {
+    Object.entries(source).forEach(([key, value]) => {
+      if (key in result) return;
+      const normalized = normalizeConditionValues(value);
+      if (normalized.length) result[key] = normalized;
+    });
   }
+  return result;
+};
+
+const buildConditions = (scenario: ScenarioDraft): ProductRecommendationScenario["conditions"] =>
+  Object.fromEntries(
+    Object.entries(scenario.conditions).filter(([, values]) => Array.isArray(values) && values.length > 0),
+  );
+
+const formatScenarioSummary = (
+  scenario: ScenarioDraft,
+  categories: Array<Pick<VocabularyCategory, "key" | "title">>,
+) => {
+  const parts: string[] = [];
+  const knownKeys = new Set(categories.map((category) => category.key));
+  categories.forEach((category) => {
+    const values = scenario.conditions[category.key] ?? [];
+    if (values.length) parts.push(`${category.title}: ${values.length}`);
+  });
+  Object.entries(scenario.conditions).forEach(([key, values]) => {
+    if (knownKeys.has(key)) return;
+    if (values.length) parts.push(`${key}: ${values.length}`);
+  });
   if (scenario.explanationTemplate.trim()) {
     parts.push("Are explicație");
   }
@@ -177,6 +177,17 @@ export function ProductForm({
   const [scenarios, setScenarios] = useState<ScenarioDraft[]>([]);
   const [isScenarioDialogOpen, setIsScenarioDialogOpen] = useState(false);
   const [editingScenarioIndex, setEditingScenarioIndex] = useState<number | null>(null);
+  const [scenarioDialogMode, setScenarioDialogMode] = useState<"add" | "edit">("edit");
+  const [vocabularyCategories, setVocabularyCategories] = useState<WithId<VocabularyCategory>[]>([]);
+  const [vocabularyError, setVocabularyError] = useState<string | null>(null);
+  const sortedVocabularyCategories = useMemo(
+    () => vocabularyCategories.slice().sort((a, b) => a.order - b.order),
+    [vocabularyCategories],
+  );
+  const vocabularyKeys = useMemo(
+    () => sortedVocabularyCategories.map((category) => category.key),
+    [sortedVocabularyCategories],
+  );
 
   useEffect(() => {
     pendingFilesRef.current = pendingFiles;
@@ -195,8 +206,30 @@ export function ProductForm({
       setScenarios([]);
       return;
     }
-    setScenarios((initialValues.recommendationScenarios ?? []).map((scenario) => toScenarioDraft(scenario)));
-  }, [initialValues]);
+    setScenarios(
+      (initialValues.recommendationScenarios ?? []).map((scenario) => ({
+        id: generateClientId(),
+        active: scenario.active,
+        order: scenario.order,
+        explanationTemplate: scenario.explanationTemplate ?? "",
+        conditions: buildConditionMap(vocabularyKeys, scenario.conditions),
+      })),
+    );
+  }, [initialValues, vocabularyKeys]);
+
+  useEffect(() => {
+    listVocabularyKeys({ includeInactive: true })
+      .then((items) => {
+        setVocabularyCategories(items);
+        setVocabularyError(null);
+      })
+      .catch((err) => {
+        logFirebaseError("Products: loadVocabularyKeys", err);
+        const info = getFirebaseErrorInfo(err);
+        setVocabularyError(info.message || "Nu pot încărca Vocabulary.");
+        setVocabularyCategories([]);
+      });
+  }, []);
 
   useEffect(() => {
     if (!prefillValues) return;
@@ -220,9 +253,9 @@ export function ProductForm({
     }));
     const activeScenarios = scenarios.filter((s) => s.active);
     const tags = {
-      level: [...new Set(activeScenarios.flatMap((s) => s.conditions.level))],
-      style: [...new Set(activeScenarios.flatMap((s) => s.conditions.style))],
-      distance: [...new Set(activeScenarios.flatMap((s) => s.conditions.distance))],
+      level: [...new Set(activeScenarios.flatMap((s) => s.conditions.level ?? []))],
+      style: [...new Set(activeScenarios.flatMap((s) => s.conditions.style ?? []))],
+      distance: [...new Set(activeScenarios.flatMap((s) => s.conditions.distance ?? []))],
     };
 
     try {
@@ -338,15 +371,17 @@ export function ProductForm({
       active: true,
       order: nextOrder,
       explanationTemplate: "",
-      conditions: { level: [], style: [], distance: [], priority: [], budgetMin: undefined, budgetMax: undefined },
+      conditions: buildConditionMap(vocabularyKeys, {}),
     };
     setScenarios((prev) => [...prev, nextScenario]);
     setEditingScenarioIndex(scenarios.length);
+    setScenarioDialogMode("add");
     setIsScenarioDialogOpen(true);
   };
 
   const openScenarioDialog = (index: number) => {
     setEditingScenarioIndex(index);
+    setScenarioDialogMode("edit");
     setIsScenarioDialogOpen(true);
   };
 
@@ -448,7 +483,9 @@ export function ProductForm({
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <div className="font-medium">Regulă {index + 1}</div>
-                        <div className="text-muted-foreground text-xs">{formatScenarioSummary(scenario)}</div>
+                        <div className="text-muted-foreground text-xs">
+                          {formatScenarioSummary(scenario, sortedVocabularyCategories)}
+                        </div>
                         <div className="text-muted-foreground text-xs">
                           {scenario.active ? "Activ" : "Inactiv"} • order: {scenario.order}
                         </div>
@@ -497,7 +534,7 @@ export function ProductForm({
             <DialogTitle>Editează regulă</DialogTitle>
             {editingScenarioIndex !== null ? (
               <div className="space-y-4">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="text-muted-foreground text-sm">Regulă {editingScenarioIndex + 1}</div>
                   <Switch
                     checked={scenarios[editingScenarioIndex]?.active ?? false}
@@ -505,90 +542,43 @@ export function ProductForm({
                   />
                 </div>
 
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <FormLabel>Nivel</FormLabel>
-                    <VocabularyMultiSelect
-                      vocabKey="level"
-                      value={scenarios[editingScenarioIndex]?.conditions.level ?? []}
-                      onChange={(value) =>
-                        updateScenario(editingScenarioIndex, {
-                          conditions: { ...scenarios[editingScenarioIndex].conditions, level: value },
-                        })
-                      }
-                    />
+                {vocabularyError ? <div className="text-destructive text-sm">{vocabularyError}</div> : null}
+                {sortedVocabularyCategories.length === 0 ? (
+                  <div className="text-muted-foreground text-sm">Nu există categorii în Vocabulary.</div>
+                ) : (
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {sortedVocabularyCategories.map((category) => {
+                      const label = category.active ? category.title : `${category.title} (inactiv)`;
+                      const tip =
+                        category.description?.trim() ||
+                        `Alege valorile care fac produsul potrivit pentru ${category.title.toLowerCase()}.`;
+                      return (
+                        <div key={category.key} className="space-y-2">
+                          <FormLabel className="flex items-center gap-2">
+                            <InfoTip text={tip} />
+                            {label}
+                          </FormLabel>
+                          <VocabularyMultiSelect
+                            vocabKey={category.key}
+                            value={scenarios[editingScenarioIndex]?.conditions[category.key] ?? []}
+                            onChange={(value) =>
+                              updateScenario(editingScenarioIndex, {
+                                conditions: { ...scenarios[editingScenarioIndex].conditions, [category.key]: value },
+                              })
+                            }
+                          />
+                        </div>
+                      );
+                    })}
                   </div>
-                  <div className="space-y-2">
-                    <FormLabel>Stil</FormLabel>
-                    <VocabularyMultiSelect
-                      vocabKey="style"
-                      value={scenarios[editingScenarioIndex]?.conditions.style ?? []}
-                      onChange={(value) =>
-                        updateScenario(editingScenarioIndex, {
-                          conditions: { ...scenarios[editingScenarioIndex].conditions, style: value },
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <FormLabel>Distanță</FormLabel>
-                    <VocabularyMultiSelect
-                      vocabKey="distance"
-                      value={scenarios[editingScenarioIndex]?.conditions.distance ?? []}
-                      onChange={(value) =>
-                        updateScenario(editingScenarioIndex, {
-                          conditions: { ...scenarios[editingScenarioIndex].conditions, distance: value },
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <FormLabel>Prioritate</FormLabel>
-                    <VocabularyMultiSelect
-                      vocabKey="priority"
-                      value={scenarios[editingScenarioIndex]?.conditions.priority ?? []}
-                      onChange={(value) =>
-                        updateScenario(editingScenarioIndex, {
-                          conditions: { ...scenarios[editingScenarioIndex].conditions, priority: value },
-                        })
-                      }
-                    />
-                  </div>
-                </div>
+                )}
 
                 <div className="grid gap-4 md:grid-cols-3">
                   <div>
-                    <FormLabel>Buget minim</FormLabel>
-                    <Input
-                      type="number"
-                      value={scenarios[editingScenarioIndex]?.conditions.budgetMin ?? ""}
-                      onChange={(e) =>
-                        updateScenario(editingScenarioIndex, {
-                          conditions: {
-                            ...scenarios[editingScenarioIndex].conditions,
-                            budgetMin: e.target.value ? Number(e.target.value) : undefined,
-                          },
-                        })
-                      }
-                    />
-                  </div>
-                  <div>
-                    <FormLabel>Buget maxim</FormLabel>
-                    <Input
-                      type="number"
-                      value={scenarios[editingScenarioIndex]?.conditions.budgetMax ?? ""}
-                      onChange={(e) =>
-                        updateScenario(editingScenarioIndex, {
-                          conditions: {
-                            ...scenarios[editingScenarioIndex].conditions,
-                            budgetMax: e.target.value ? Number(e.target.value) : undefined,
-                          },
-                        })
-                      }
-                    />
-                  </div>
-                  <div>
-                    <FormLabel>Ordine</FormLabel>
+                    <FormLabel className="flex items-center gap-2">
+                      <InfoTip text="Mai mic = regula este verificată mai devreme." />
+                      Ordine
+                    </FormLabel>
                     <Input
                       type="number"
                       value={scenarios[editingScenarioIndex]?.order ?? 0}
@@ -598,12 +588,26 @@ export function ProductForm({
                 </div>
 
                 <div className="space-y-2">
-                  <FormLabel>Explicație</FormLabel>
+                  <FormLabel className="flex items-center gap-2">
+                    <InfoTip text="Textul pe care îl vede utilizatorul ca motiv al recomandării (opțional)." />
+                    Explicație
+                  </FormLabel>
                   <Textarea
                     rows={3}
                     value={scenarios[editingScenarioIndex]?.explanationTemplate ?? ""}
                     onChange={(e) => updateScenario(editingScenarioIndex, { explanationTemplate: e.target.value })}
                   />
+                </div>
+                <div className="flex items-center justify-end">
+                  {scenarioDialogMode === "edit" ? (
+                    <Button type="button" onClick={() => setIsScenarioDialogOpen(false)}>
+                      Editează regulă
+                    </Button>
+                  ) : (
+                    <Button type="button" onClick={() => setIsScenarioDialogOpen(false)}>
+                      Gata
+                    </Button>
+                  )}
                 </div>
               </div>
             ) : null}

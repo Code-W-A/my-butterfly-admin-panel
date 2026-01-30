@@ -6,19 +6,18 @@ import { useRouter } from "next/navigation";
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { deleteField } from "firebase/firestore";
-import { CircleHelp } from "lucide-react";
 import { useFieldArray, useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { logFirebaseError } from "@/lib/firebase/error-utils.client";
 import { createQuestion, deleteQuestion, listAllQuestionOptionValues, updateQuestion } from "@/lib/firestore/questions";
 import type { QuestionnaireQuestion, WithId } from "@/lib/firestore/types";
@@ -139,33 +138,21 @@ const generateUniqueValue = (label: string, existing: Set<string>) => {
   return null;
 };
 
-function HelpTip({ text }: { text: string }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label="Info"
-          className="inline-flex items-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/50"
-        >
-          <CircleHelp className="size-4" />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="top" sideOffset={6} className="max-w-[280px] text-left">
-        {text}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
 type QuestionEditorProps = {
   questionnaireId: string;
   selected: WithId<QuestionnaireQuestion> | null;
+  defaultOrder?: number;
   onSaved: () => void;
   onCancelEdit: () => void;
 };
 
-export function QuestionEditor({ questionnaireId, selected, onSaved, onCancelEdit }: QuestionEditorProps) {
+export function QuestionEditor({
+  questionnaireId,
+  selected,
+  defaultOrder,
+  onSaved,
+  onCancelEdit,
+}: QuestionEditorProps) {
   const router = useRouter();
   const form = useForm<QuestionFormValues>({
     resolver: zodResolver(questionSchema),
@@ -332,11 +319,14 @@ export function QuestionEditor({ questionnaireId, selected, onSaved, onCancelEdi
         /* no-op */
       });
       // #endregion
-      form.reset(defaultValues);
+      form.reset({
+        ...defaultValues,
+        order: Number.isFinite(defaultOrder) ? (defaultOrder as number) : defaultValues.order,
+      });
     }
     skipImportPromptRef.current = true;
     keySelectOpenedByUserRef.current = false;
-  }, [form, selected]);
+  }, [defaultOrder, form, selected]);
 
   useEffect(() => {
     // Keep validation constraints relevant to the selected type.
@@ -643,7 +633,7 @@ export function QuestionEditor({ questionnaireId, selected, onSaved, onCancelEdi
               render={({ field }) => (
                 <FormItem data-tour="question-editor-key">
                   <FormLabel>
-                    <HelpTip text="Alege ce fel de întrebare este (Nivel, Stil, Distanță, Prioritate, Preferințe, Buget). Răspunsul se folosește la calculul recomandărilor." />
+                    <InfoTip text="Alege ce fel de întrebare este (Nivel, Stil, Distanță, Prioritate, Preferințe, Buget). Răspunsul se folosește la calculul recomandărilor." />
                     Cheie
                   </FormLabel>
                   <Select
@@ -719,7 +709,7 @@ export function QuestionEditor({ questionnaireId, selected, onSaved, onCancelEdi
               render={({ field }) => (
                 <FormItem data-tour="question-editor-type">
                   <FormLabel>
-                    <HelpTip text="Cum răspunde utilizatorul: o opțiune, mai multe, text liber sau un interval." />
+                    <InfoTip text="Cum răspunde utilizatorul: o opțiune, mai multe, text liber sau un interval." />
                     Tip
                   </FormLabel>
                   <Select
@@ -796,7 +786,7 @@ export function QuestionEditor({ questionnaireId, selected, onSaved, onCancelEdi
             render={({ field }) => (
               <FormItem>
                 <FormLabel>
-                  <HelpTip text="Întrebarea exactă pe care o vede utilizatorul în aplicație." />
+                  <InfoTip text="Întrebarea exactă pe care o vede utilizatorul în aplicație." />
                   Text întrebare
                 </FormLabel>
                 <FormControl>
@@ -814,7 +804,7 @@ export function QuestionEditor({ questionnaireId, selected, onSaved, onCancelEdi
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>
-                    <HelpTip text="Poziția întrebării în chestionar. Un număr mai mic înseamnă că apare mai sus." />
+                    <InfoTip text="Poziția întrebării în chestionar. Un număr mai mic înseamnă că apare mai sus." />
                     Ordine
                   </FormLabel>
                   <FormControl>
@@ -830,7 +820,7 @@ export function QuestionEditor({ questionnaireId, selected, onSaved, onCancelEdi
               render={({ field }) => (
                 <FormItem className="flex items-center justify-between rounded-md border p-3">
                   <FormLabel>
-                    <HelpTip text="Dacă e oprit, întrebarea nu apare utilizatorilor." />
+                    <InfoTip text="Dacă e oprit, întrebarea nu apare utilizatorilor." />
                     Activ
                   </FormLabel>
                   <FormControl>
@@ -847,7 +837,7 @@ export function QuestionEditor({ questionnaireId, selected, onSaved, onCancelEdi
             render={({ field }) => (
               <FormItem>
                 <FormLabel>
-                  <HelpTip text="Un rând scurt sub întrebare, ca să explice mai clar ce trebuie completat (opțional)." />
+                  <InfoTip text="Un rând scurt sub întrebare, ca să explice mai clar ce trebuie completat (opțional)." />
                   Text de ajutor
                 </FormLabel>
                 <FormControl>
@@ -865,7 +855,7 @@ export function QuestionEditor({ questionnaireId, selected, onSaved, onCancelEdi
               render={({ field }) => (
                 <FormItem className="flex items-center justify-between rounded-md border p-3">
                   <FormLabel>
-                    <HelpTip text="Dacă e pornit, utilizatorul trebuie să răspundă ca să continue." />
+                    <InfoTip text="Dacă e pornit, utilizatorul trebuie să răspundă ca să continue." />
                     Obligatoriu
                   </FormLabel>
                   <FormControl>
@@ -882,7 +872,7 @@ export function QuestionEditor({ questionnaireId, selected, onSaved, onCancelEdi
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>
-                        <HelpTip text="Cea mai mică valoare permisă pentru interval." />
+                        <InfoTip text="Cea mai mică valoare permisă pentru interval." />
                         Minim
                       </FormLabel>
                       <FormControl>
@@ -898,7 +888,7 @@ export function QuestionEditor({ questionnaireId, selected, onSaved, onCancelEdi
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>
-                        <HelpTip text="Cea mai mare valoare permisă pentru interval." />
+                        <InfoTip text="Cea mai mare valoare permisă pentru interval." />
                         Maxim
                       </FormLabel>
                       <FormControl>
@@ -916,7 +906,7 @@ export function QuestionEditor({ questionnaireId, selected, onSaved, onCancelEdi
             <div className="space-y-3" data-tour="question-editor-options">
               <div className="flex items-center justify-between">
                 <h4 className="flex items-center gap-2 font-medium">
-                  <HelpTip text="Listele de răspuns pe care utilizatorul le poate alege." />
+                  <InfoTip text="Listele de răspuns pe care utilizatorul le poate alege." />
                   Opțiuni
                 </h4>
                 <div className="flex items-center gap-2">
@@ -1019,7 +1009,7 @@ export function QuestionEditor({ questionnaireId, selected, onSaved, onCancelEdi
               <div className="text-muted-foreground text-xs">ID-ul se generează automat din text.</div>
               <div className="space-y-2">
                 <Label>
-                  <HelpTip text="Textul pe care îl vede utilizatorul în listă." />
+                  <InfoTip text="Textul pe care îl vede utilizatorul în listă." />
                   Text (afișat)
                 </Label>
                 <Input
@@ -1033,7 +1023,7 @@ export function QuestionEditor({ questionnaireId, selected, onSaved, onCancelEdi
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label>
-                    <HelpTip text="Ordinea în care apare opțiunea în listă." />
+                    <InfoTip text="Ordinea în care apare opțiunea în listă." />
                     Ordine
                   </Label>
                   <Input
@@ -1050,7 +1040,7 @@ export function QuestionEditor({ questionnaireId, selected, onSaved, onCancelEdi
                 </div>
                 <div className="flex items-center justify-between rounded-md border p-3">
                   <Label>
-                    <HelpTip text="Dacă e oprită, opțiunea nu apare utilizatorului." />
+                    <InfoTip text="Dacă e oprită, opțiunea nu apare utilizatorului." />
                     Activ
                   </Label>
                   <Switch

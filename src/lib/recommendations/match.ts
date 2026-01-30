@@ -9,6 +9,7 @@ export type RecommendationInput = {
   budgetMin?: number;
   budgetMax?: number;
   preferences?: string[];
+  selectionsByKey?: Record<string, string[]>;
 };
 
 export type ProductMatch = {
@@ -16,12 +17,6 @@ export type ProductMatch = {
   scenario: ProductRecommendationScenario;
   fitScore: number;
   matchedPreferences: string[];
-};
-
-const includesOrAny = (allowed: string[] | undefined, value: string | undefined) => {
-  if (!allowed?.length) return true;
-  if (!value) return false;
-  return allowed.includes(value);
 };
 
 const normalizePreferenceKey = (value: string) => {
@@ -61,10 +56,24 @@ const matchesScenario = (
   product: WithId<Product>,
 ) => {
   const c = scenario.conditions ?? {};
-  if (!includesOrAny(c.level, input.level)) return false;
-  if (!includesOrAny(c.style, input.style)) return false;
-  if (!includesOrAny(c.distance, input.distance)) return false;
-  if (!includesOrAny(c.priority, input.priority)) return false;
+  const selectionForKey = (key: string) => {
+    const fromMap = input.selectionsByKey?.[key];
+    if (fromMap?.length) return fromMap;
+    if (key === "level" && input.level) return [input.level];
+    if (key === "style" && input.style) return [input.style];
+    if (key === "distance" && input.distance) return [input.distance];
+    if (key === "priority" && input.priority) return [input.priority];
+    if (key === "preferences" && input.preferences?.length) return input.preferences;
+    return [];
+  };
+
+  for (const [key, allowed] of Object.entries(c)) {
+    if (key === "budgetMin" || key === "budgetMax") continue;
+    if (!Array.isArray(allowed) || allowed.length === 0) continue;
+    const selected = selectionForKey(key);
+    if (!selected.length) return false;
+    if (!selected.some((value) => allowed.includes(value))) return false;
+  }
 
   const userBudgetMin = input.budgetMin ?? input.budget;
   const userBudgetMax = input.budgetMax ?? input.budget;
@@ -72,8 +81,6 @@ const matchesScenario = (
   if (userBudgetMin !== undefined && product.price < userBudgetMin) return false;
   if (userBudgetMax !== undefined && product.price > userBudgetMax) return false;
 
-  if (userBudgetMin !== undefined && c.budgetMax !== undefined && c.budgetMax < userBudgetMin) return false;
-  if (userBudgetMax !== undefined && c.budgetMin !== undefined && c.budgetMin > userBudgetMax) return false;
   return true;
 };
 

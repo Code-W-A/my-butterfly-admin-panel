@@ -24,7 +24,7 @@ import {
   createQuestionnaireCompletion,
   setQuestionnaireCompletionSpecialistRequestId,
 } from "@/lib/firestore/completions";
-import { listProducts } from "@/lib/firestore/products";
+import { listProducts, updateProduct } from "@/lib/firestore/products";
 import { listQuestionnaires } from "@/lib/firestore/questionnaires";
 import { listQuestions } from "@/lib/firestore/questions";
 import { createSpecialistRequest } from "@/lib/firestore/requests";
@@ -74,6 +74,16 @@ const buildImageGallery = (product: Product) => {
     .map((item) => item.trim())
     .filter(Boolean);
   return Array.from(new Set(images));
+};
+
+const getPrestashopProductIdFromUrl = (url: string) => {
+  try {
+    const parsed = new URL(url);
+    const id = parsed.searchParams.get("id_product");
+    return id || null;
+  } catch {
+    return null;
+  }
 };
 
 const asTrimmedString = (value: unknown) => {
@@ -127,6 +137,21 @@ const buildRecommendationInput = (questions: WithId<QuestionnaireQuestion>[], an
     return question ? answers[question.id] : undefined;
   };
 
+  const selectionsByKey = questions.reduce<Record<string, string[]>>((acc, question) => {
+    if (!question.active) return acc;
+    const answer = answers[question.id];
+    if (question.type === "single_select") {
+      const selected = asSingleChoice(answer);
+      if (selected) acc[question.key] = [selected];
+      return acc;
+    }
+    if (question.type === "multi_select") {
+      const selected = asStringArray(answer);
+      if (selected.length) acc[question.key] = selected;
+    }
+    return acc;
+  }, {});
+
   const level = asSingleChoice(getAnswerByKey("level"));
   const style = asSingleChoice(getAnswerByKey("style"));
   const distance = asSingleChoice(getAnswerByKey("distance"));
@@ -152,6 +177,7 @@ const buildRecommendationInput = (questions: WithId<QuestionnaireQuestion>[], an
     budgetMin: budgetRange.min,
     budgetMax: budgetRange.max,
     preferences: preferences.length ? preferences : undefined,
+    selectionsByKey: Object.keys(selectionsByKey).length ? selectionsByKey : undefined,
   };
 
   return { input, preferences };
@@ -219,6 +245,35 @@ export default function RecommendationTestPage() {
     distance: {},
     priority: {},
   });
+
+  const openProductUrl = useCallback(async (product: Product) => {
+    const fallbackUrl = product.productUrl;
+    if (!fallbackUrl) return;
+    let resolvedUrl = fallbackUrl;
+    if (product.source?.provider === "prestashop") {
+      const productId = product.source.prestashopProductId || getPrestashopProductIdFromUrl(fallbackUrl);
+      if (productId) {
+        try {
+          const response = await fetch(`/api/prestashop/products/${productId}`);
+          const data = (await response.json()) as { productUrl?: string };
+          if (data?.productUrl) resolvedUrl = data.productUrl;
+        } catch {
+          // ignore and fall back to current URL
+        }
+      }
+    }
+    if (resolvedUrl !== fallbackUrl) {
+      updateProduct(product.id, { productUrl: resolvedUrl }).catch(() => {
+        // ignore save errors for link updates
+      });
+    }
+    console.info("[recommendations] open product url", {
+      productId: product.id,
+      fallbackUrl,
+      resolvedUrl,
+    });
+    window.open(resolvedUrl, "_blank", "noopener,noreferrer");
+  }, []);
 
   const activeQuestionnaires = useMemo(() => questionnaires.filter((item) => item.active), [questionnaires]);
   const orderedQuestions = useMemo(
@@ -792,36 +847,38 @@ export default function RecommendationTestPage() {
                       </div>
 
                       <div className="space-y-3">
-                        <div className="grid gap-3 rounded-md border p-3 md:grid-cols-2">
-                          <div className="space-y-1">
-                            <Label>Nume (pentru istoric)</Label>
-                            <Input
-                              value={completionContact.name}
-                              onChange={(event) => {
-                                const value = event.target.value;
-                                setCompletionContact((prev) => ({ ...prev, name: value }));
-                                if (completionError) setCompletionError(null);
-                              }}
-                              placeholder="Nume complet"
-                            />
+                        {currentStep === orderedQuestions.length - 1 ? (
+                          <div className="grid gap-3 rounded-md border p-3 md:grid-cols-2">
+                            <div className="space-y-1">
+                              <Label>Nume (pentru istoric)</Label>
+                              <Input
+                                value={completionContact.name}
+                                onChange={(event) => {
+                                  const value = event.target.value;
+                                  setCompletionContact((prev) => ({ ...prev, name: value }));
+                                  if (completionError) setCompletionError(null);
+                                }}
+                                placeholder="Nume complet"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Email (pentru istoric)</Label>
+                              <Input
+                                type="email"
+                                value={completionContact.email}
+                                onChange={(event) => {
+                                  const value = event.target.value;
+                                  setCompletionContact((prev) => ({ ...prev, email: value }));
+                                  if (completionError) setCompletionError(null);
+                                }}
+                                placeholder="email@exemplu.ro"
+                              />
+                            </div>
+                            {completionError ? (
+                              <div className="text-destructive text-sm md:col-span-2">{completionError}</div>
+                            ) : null}
                           </div>
-                          <div className="space-y-1">
-                            <Label>Email (pentru istoric)</Label>
-                            <Input
-                              type="email"
-                              value={completionContact.email}
-                              onChange={(event) => {
-                                const value = event.target.value;
-                                setCompletionContact((prev) => ({ ...prev, email: value }));
-                                if (completionError) setCompletionError(null);
-                              }}
-                              placeholder="email@exemplu.ro"
-                            />
-                          </div>
-                          {completionError ? (
-                            <div className="text-destructive text-sm md:col-span-2">{completionError}</div>
-                          ) : null}
-                        </div>
+                        ) : null}
 
                         <div className="flex items-center justify-between">
                           <Button
@@ -936,6 +993,10 @@ export default function RecommendationTestPage() {
                                     target="_blank"
                                     rel="noreferrer"
                                     className="text-primary text-sm underline-offset-4 hover:underline"
+                                    onClick={(event) => {
+                                      event.preventDefault();
+                                      void openProductUrl(match.product);
+                                    }}
                                   >
                                     Vezi produsul în magazin
                                   </a>
@@ -1173,6 +1234,10 @@ export default function RecommendationTestPage() {
                       target="_blank"
                       rel="noreferrer"
                       className="text-primary text-sm underline-offset-4 hover:underline"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        void openProductUrl(selectedMatch.product);
+                      }}
                     >
                       Vezi produsul în magazin
                     </a>
@@ -1250,10 +1315,10 @@ export default function RecommendationTestPage() {
       </Dialog>
 
       <Dialog open={Boolean(imageViewer)} onOpenChange={(open) => (!open ? setImageViewer(null) : null)}>
-        <DialogContent className="h-[85vh] w-[90vw] max-w-5xl overflow-hidden">
+        <DialogContent className="flex h-[85vh] w-[90vw] max-w-5xl flex-col overflow-hidden">
           {imageViewer ? (
             <div className="flex h-full flex-col gap-4">
-              <div className="flex items-start justify-between gap-4">
+              <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
                   <DialogTitle>Imagini produs</DialogTitle>
                   <div className="text-muted-foreground text-sm">{imageViewer.title}</div>
@@ -1278,7 +1343,7 @@ export default function RecommendationTestPage() {
                   <ChevronLeft className="size-4" />
                 </Button>
                 <div className="min-h-0 flex-1">
-                  <div className="relative h-full w-full overflow-hidden rounded-md border bg-muted/20">
+                  <div className="relative h-full min-h-[240px] w-full overflow-hidden rounded-md border bg-muted/20">
                     <Image
                       src={imageViewer.images[imageViewer.index]}
                       alt={imageViewer.title}

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import Image from "next/image";
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -11,14 +13,15 @@ import { z } from "zod";
 
 import { ProductMultiSelect } from "@/components/mybutterfly/forms/product-multi-select";
 import { PageHelpDialog } from "@/components/mybutterfly/help/page-help-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
-import { listProducts } from "@/lib/firestore/products";
+import { logFirebaseError } from "@/lib/firebase/error-utils.client";
+import { getProductsByIds, listProducts } from "@/lib/firestore/products";
 import { getQuestionnaire } from "@/lib/firestore/questionnaires";
 import { listQuestions } from "@/lib/firestore/questions";
 import {
@@ -26,7 +29,8 @@ import {
   setSpecialistRequestReply,
   updateSpecialistRequestStatus,
 } from "@/lib/firestore/requests";
-import type { Questionnaire, QuestionnaireQuestion, SpecialistRequest, WithId } from "@/lib/firestore/types";
+import type { Product, Questionnaire, QuestionnaireQuestion, SpecialistRequest, WithId } from "@/lib/firestore/types";
+import { listVocabularyOptions } from "@/lib/firestore/vocabulary";
 
 type RequestWithUser = WithId<SpecialistRequest> & { userId: string };
 
@@ -70,6 +74,13 @@ export default function RequestDetailPage() {
   const requestId = params.requestId as string;
   const [request, setRequest] = useState<RequestWithUser | null>(null);
   const [products, setProducts] = useState<ProductOption[]>([]);
+  const [generatedProducts, setGeneratedProducts] = useState<WithId<Product>[]>([]);
+  const [replyProducts, setReplyProducts] = useState<WithId<Product>[]>([]);
+  const [vocabMaps, setVocabMaps] = useState<Record<string, Record<string, string>>>({
+    level: {},
+    style: {},
+    distance: {},
+  });
   const [questionnaire, setQuestionnaire] = useState<WithId<Questionnaire> | null>(null);
   const [questions, setQuestions] = useState<WithId<QuestionnaireQuestion>[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -90,15 +101,36 @@ export default function RequestDetailPage() {
 
   const load = useCallback(async () => {
     setIsLoading(true);
-    const [requestData, productsData] = await Promise.all([
+    const [requestData, productsData, levelOptions, styleOptions, distanceOptions] = await Promise.all([
       getSpecialistRequestById(requestId),
       listProducts({ activeOnly: true }),
+      listVocabularyOptions("level", { includeInactive: false }),
+      listVocabularyOptions("style", { includeInactive: false }),
+      listVocabularyOptions("distance", { includeInactive: false }),
     ]);
     setRequest(requestData);
     setProducts(
       productsData.map((item) => ({ id: item.id, name: item.name, price: item.price, currency: item.currency })),
     );
+    const toMap = (items: { value: string; label: string }[]) =>
+      Object.fromEntries(items.map((o) => [o.value, o.label]));
+    setVocabMaps({
+      level: toMap(levelOptions),
+      style: toMap(styleOptions),
+      distance: toMap(distanceOptions),
+    });
+    setGeneratedProducts([]);
+    setReplyProducts([]);
     if (requestData) {
+      const generatedIds = requestData.matchProductIds ?? [];
+      const replyIds = requestData.reply?.recommendedProductIds ?? [];
+      const allIds = Array.from(new Set([...generatedIds, ...replyIds]));
+      if (allIds.length) {
+        const fetched = await getProductsByIds(allIds);
+        const byId = new Map(fetched.map((item) => [item.id, item]));
+        setGeneratedProducts(generatedIds.map((id) => byId.get(id)).filter(Boolean) as WithId<Product>[]);
+        setReplyProducts(replyIds.map((id) => byId.get(id)).filter(Boolean) as WithId<Product>[]);
+      }
       form.reset({
         message: requestData.reply?.message ?? "",
         recommendedProductIds: requestData.reply?.recommendedProductIds ?? [],
@@ -154,6 +186,27 @@ export default function RequestDetailPage() {
       }
     }
     await load();
+  };
+
+  const buildImageGallery = (product: Product) => {
+    const images = [...(product.imageUrls ?? []), ...(product.imageUrl ? [product.imageUrl] : [])]
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return Array.from(new Set(images));
+  };
+
+  const renderTagBadges = (label: string, values: string[], map: Record<string, string>) => {
+    if (!values.length) return null;
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-muted-foreground text-xs">{label}:</span>
+        {values.map((value) => (
+          <Badge key={`${label}-${value}`} variant="outline">
+            {map[value] ?? value}
+          </Badge>
+        ))}
+      </div>
+    );
   };
 
   if (!request) {
@@ -238,9 +291,151 @@ export default function RequestDetailPage() {
           </div>
         ) : null}
         {request.matchProductIds?.length ? (
-          <div className="rounded-md border p-3 text-sm">
-            <div className="font-semibold text-xs">Recomandări generate ({request.matchProductIds.length})</div>
-            <div className="mt-1 text-muted-foreground">{request.matchProductIds.join(", ")}</div>
+          <div className="space-y-2">
+            <div className="font-semibold text-sm">Recomandări generate ({request.matchProductIds.length})</div>
+            {generatedProducts.length === 0 ? (
+              <div className="text-muted-foreground">Nu există detalii pentru produse.</div>
+            ) : (
+              <div className="space-y-4">
+                {generatedProducts.map((product, idx) => {
+                  const gallery = buildImageGallery(product);
+                  return (
+                    <div
+                      key={product.id}
+                      className="group relative rounded-lg border p-4 transition-all hover:shadow-md"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1 space-y-2">
+                          <div className="flex items-start gap-3">
+                            <Badge variant="secondary" className="mt-0.5">
+                              #{idx + 1}
+                            </Badge>
+                            {gallery.length ? (
+                              <div className="relative size-14 overflow-hidden rounded-md border bg-muted/20">
+                                <Image
+                                  src={gallery[0]}
+                                  alt={product.name}
+                                  fill
+                                  sizes="56px"
+                                  className="object-cover"
+                                  unoptimized
+                                />
+                                {gallery.length > 1 ? (
+                                  <span className="absolute right-1 bottom-1 rounded bg-background/80 px-1 font-medium text-[10px]">
+                                    +{gallery.length - 1}
+                                  </span>
+                                ) : null}
+                              </div>
+                            ) : null}
+                            <div>
+                              <h3 className="font-semibold text-lg">{product.name}</h3>
+                              <p className="text-muted-foreground text-sm">
+                                {product.price} {product.currency}
+                              </p>
+                              {product.productUrl ? (
+                                <a
+                                  href={product.productUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-primary text-sm underline-offset-4 hover:underline"
+                                >
+                                  Vezi produsul în magazin
+                                </a>
+                              ) : null}
+                            </div>
+                          </div>
+                          <div className="space-y-2 pl-11">
+                            {renderTagBadges("Nivel recomandat", product.tags.level ?? [], vocabMaps.level)}
+                            {renderTagBadges("Stil", product.tags.style ?? [], vocabMaps.style)}
+                            {renderTagBadges("Distanță", product.tags.distance ?? [], vocabMaps.distance)}
+                          </div>
+                        </div>
+                        <div className="flex flex-col gap-2">
+                          <Button asChild type="button" variant="outline" size="sm">
+                            <Link href={`/dashboard/products/${product.id}`}>Detalii</Link>
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ) : null}
+        {request.reply?.recommendedProductIds?.length ? (
+          <div className="space-y-2">
+            <div className="font-semibold text-sm">
+              Recomandări trimise ({request.reply.recommendedProductIds.length})
+            </div>
+            {replyProducts.length === 0 ? (
+              <div className="text-muted-foreground">Nu există detalii pentru produse.</div>
+            ) : (
+              <div className="space-y-4">
+                {replyProducts.map((product, idx) => {
+                  const gallery = buildImageGallery(product);
+                  return (
+                    <div
+                      key={product.id}
+                      className="group relative rounded-lg border p-4 transition-all hover:shadow-md"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1 space-y-2">
+                          <div className="flex items-start gap-3">
+                            <Badge variant="secondary" className="mt-0.5">
+                              #{idx + 1}
+                            </Badge>
+                            {gallery.length ? (
+                              <div className="relative size-14 overflow-hidden rounded-md border bg-muted/20">
+                                <Image
+                                  src={gallery[0]}
+                                  alt={product.name}
+                                  fill
+                                  sizes="56px"
+                                  className="object-cover"
+                                  unoptimized
+                                />
+                                {gallery.length > 1 ? (
+                                  <span className="absolute right-1 bottom-1 rounded bg-background/80 px-1 font-medium text-[10px]">
+                                    +{gallery.length - 1}
+                                  </span>
+                                ) : null}
+                              </div>
+                            ) : null}
+                            <div>
+                              <h3 className="font-semibold text-lg">{product.name}</h3>
+                              <p className="text-muted-foreground text-sm">
+                                {product.price} {product.currency}
+                              </p>
+                              {product.productUrl ? (
+                                <a
+                                  href={product.productUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-primary text-sm underline-offset-4 hover:underline"
+                                >
+                                  Vezi produsul în magazin
+                                </a>
+                              ) : null}
+                            </div>
+                          </div>
+                          <div className="space-y-2 pl-11">
+                            {renderTagBadges("Nivel recomandat", product.tags.level ?? [], vocabMaps.level)}
+                            {renderTagBadges("Stil", product.tags.style ?? [], vocabMaps.style)}
+                            {renderTagBadges("Distanță", product.tags.distance ?? [], vocabMaps.distance)}
+                          </div>
+                        </div>
+                        <div className="flex flex-col gap-2">
+                          <Button asChild type="button" variant="outline" size="sm">
+                            <Link href={`/dashboard/products/${product.id}`}>Detalii</Link>
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         ) : null}
       </div>

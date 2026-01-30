@@ -4,11 +4,14 @@ import { useState } from "react";
 
 import { useRouter } from "next/navigation";
 
+import { Search } from "lucide-react";
+
 import { PageHelpDialog } from "@/components/mybutterfly/help/page-help-dialog";
 import { PrestashopProductPicker } from "@/components/mybutterfly/products/prestashop-product-picker";
 import { ProductForm } from "@/components/mybutterfly/products/product-form";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { createProduct, getProduct, upsertProductById } from "@/lib/firestore/products";
 
@@ -18,6 +21,8 @@ type PrestashopDetails = {
   price: number;
   currency: "EUR" | "RON";
   active: boolean;
+  prestashopFull?: Record<string, unknown>;
+  imageUrls?: string[];
   imageUrl?: string;
   imageId?: number;
   productUrl?: string;
@@ -39,6 +44,8 @@ export default function NewProductPage() {
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [alreadyImportedId, setAlreadyImportedId] = useState<string | null>(null);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [prestashopFull, setPrestashopFull] = useState<Record<string, unknown> | null>(null);
   const [prestashopMeta, setPrestashopMeta] = useState<{
     productId: number;
     imageId?: number;
@@ -46,15 +53,7 @@ export default function NewProductPage() {
     productUrl?: string;
   } | null>(null);
 
-  const handleSelectPrestashop = async (product: {
-    id: string;
-    name: string;
-    price: number;
-    active: boolean;
-    imageUrl?: string;
-    imageId?: number;
-    productUrl?: string;
-  }) => {
+  const handleSelectPrestashop = async (product: { id: string; name: string; price: number; reference?: string }) => {
     setSelectedPrestashopId(product.id);
     setAlreadyImportedId(null);
     setIsLoadingDetails(true);
@@ -64,40 +63,46 @@ export default function NewProductPage() {
         name: product.name,
         price: product.price,
         currency: "RON",
-        active: product.active,
-        ...(product.imageUrl ? { imageUrls: [product.imageUrl], imageUrl: product.imageUrl } : {}),
-        ...(product.productUrl ? { productUrl: product.productUrl } : {}),
       });
       setPrestashopMeta({
         productId: Number(product.id),
-        imageId: product.imageId,
-        imageUrl: product.imageUrl,
-        productUrl: product.productUrl,
       });
 
       const response = await fetch(`/api/prestashop/products/${product.id}`);
       const data = (await response.json()) as PrestashopDetails;
-      setPrefillValues({
-        name: data.name ?? product.name,
-        price: data.price ?? product.price,
-        currency: "RON",
-        active: data.active ?? product.active,
-        ...(data.imageUrl
-          ? { imageUrls: [data.imageUrl], imageUrl: data.imageUrl }
-          : product.imageUrl
-            ? { imageUrls: [product.imageUrl], imageUrl: product.imageUrl }
-            : {}),
-        ...(data.productUrl
-          ? { productUrl: data.productUrl }
-          : product.productUrl
-            ? { productUrl: product.productUrl }
-            : {}),
+      console.log("[prestashop] details response", data);
+      const resolvedImageUrls =
+        data.imageUrls && data.imageUrls.length > 0 ? data.imageUrls : data.imageUrl ? [data.imageUrl] : [];
+      console.log("[prestashop] resolved images", resolvedImageUrls);
+      setPrestashopFull(data.prestashopFull ?? null);
+      setPrefillValues((prev) => {
+        const next = { ...(prev ?? {}) } as {
+          name?: string;
+          price?: number;
+          currency?: "EUR" | "RON";
+          active?: boolean;
+          imageUrls?: string[];
+          imageUrl?: string;
+          productUrl?: string;
+        };
+        const resolvedName = data.name?.trim() ? data.name : product.name;
+        if (resolvedName.trim()) next.name = resolvedName;
+        const resolvedPrice = data.price && data.price > 0 ? data.price : product.price;
+        if (resolvedPrice !== undefined) next.price = resolvedPrice;
+        next.currency = "RON";
+        if (data.active !== undefined) next.active = data.active;
+        if (resolvedImageUrls.length) {
+          next.imageUrls = resolvedImageUrls;
+          next.imageUrl = resolvedImageUrls[0];
+        }
+        if (data.productUrl) next.productUrl = data.productUrl;
+        return next;
       });
       setPrestashopMeta({
         productId: Number(data.id ?? product.id),
-        imageId: data.imageId ?? product.imageId,
-        imageUrl: data.imageUrl ?? product.imageUrl,
-        productUrl: data.productUrl ?? product.productUrl,
+        imageId: data.imageId,
+        imageUrl: data.imageUrl ?? resolvedImageUrls[0],
+        productUrl: data.productUrl,
       });
       const existing = await getProduct(docId);
       setAlreadyImportedId(existing ? docId : null);
@@ -173,21 +178,39 @@ export default function NewProductPage() {
         ) : null}
       </div>
 
-      <Dialog open={isPickerOpen} onOpenChange={setIsPickerOpen}>
-        <DialogContent className="h-[90vh] w-[90vw] max-w-[90vw] p-6">
-          <DialogHeader>
+      <Dialog
+        open={isPickerOpen}
+        onOpenChange={(open) => {
+          setIsPickerOpen(open);
+          if (!open) setSearchQuery("");
+        }}
+      >
+        <DialogContent className="flex h-[90vh] w-[90vw] max-w-[90vw] flex-col gap-4 p-6">
+          <DialogHeader className="shrink-0">
             <DialogTitle>Importă din PrestaShop</DialogTitle>
             <DialogDescription>Selectează produsul pe care vrei să îl imporți.</DialogDescription>
           </DialogHeader>
-          <PrestashopProductPicker
-            onSelect={(item) => {
-              void handleSelectPrestashop(item);
-              setIsPickerOpen(false);
-            }}
-            selectedId={selectedPrestashopId ?? undefined}
-            placeholder="Caută produs în PrestaShop"
-            inline
-          />
+          <div className="relative shrink-0">
+            <Search className="absolute top-3 left-3 size-4 text-muted-foreground" />
+            <Input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Caută produs în PrestaShop"
+              className="h-11 pl-9"
+            />
+          </div>
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <PrestashopProductPicker
+              onSelect={(item) => {
+                void handleSelectPrestashop(item);
+                setIsPickerOpen(false);
+              }}
+              selectedId={selectedPrestashopId ?? undefined}
+              query={searchQuery}
+              onQueryChange={setSearchQuery}
+              inline
+            />
+          </div>
         </DialogContent>
       </Dialog>
 
@@ -203,9 +226,14 @@ export default function NewProductPage() {
                 provider: "prestashop",
                 prestashopProductId: selectedPrestashopId,
               },
-              prestashop: prestashopMeta ?? { productId: Number(selectedPrestashopId) },
+              prestashop: prestashopMeta?.imageId
+                ? prestashopMeta
+                : prestashopMeta
+                  ? { productId: prestashopMeta.productId }
+                  : { productId: Number(selectedPrestashopId) },
               imageUrl: prefillValues?.imageUrl,
               productUrl: prefillValues?.productUrl,
+              ...(prestashopFull ? { prestashopFull } : {}),
             });
             router.push(`/dashboard/products/${docId}`);
             return;

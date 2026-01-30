@@ -16,7 +16,10 @@ export type HelpKey =
   | "products.new"
   | "products.edit"
   | "requests.list"
-  | "requests.detail";
+  | "requests.detail"
+  | "questionnaire-completions.list"
+  | "questionnaire-completions.detail"
+  | "vocabulary";
 
 export const HELP_CONTENT: Record<HelpKey, { title: string; sections: HelpSection[] }> = {
   dashboard: {
@@ -25,23 +28,51 @@ export const HELP_CONTENT: Record<HelpKey, { title: string; sections: HelpSectio
       {
         title: "Ce face această pagină",
         paragraphs: [
-          "Dashboard-ul îți arată rapid câte produse și chestionare sunt active și câte cereri noi către specialist au venit din aplicație.",
-          "Valorile nu se actualizează automat în timp real. Pentru valori la zi, reîncarcă pagina.",
+          "Dashboard-ul îți oferă o vedere de ansamblu asupra produselor/chestionarelor active, activității chestionarelor (starts + completări) și cererilor către specialist.",
+          "Datele nu se actualizează automat în timp real. Pentru valori la zi, reîncarcă pagina.",
         ],
       },
       {
-        title: "Ce înseamnă cardurile",
+        title: "KPI-uri (cardurile de sus)",
         bullets: [
-          "Produse active: produse marcate ca active.",
-          "Chestionare active: chestionare marcate ca active.",
-          "Cereri noi către specialist: cereri care încă nu au fost procesate.",
+          "Produse active: numărul produselor marcate ca „active”.",
+          "Chestionare active: numărul chestionarelor marcate ca „active”.",
+          "Cereri noi către specialist: numărul cererilor cu status „new/nou”.",
+        ],
+      },
+      {
+        title: "Analytics chestionare",
+        paragraphs: [
+          "Alege un chestionar activ și o perioadă (7 / 30 / 90 zile). Graficul arată pe zile câte sesiuni au fost începute (starts) și câte au fost finalizate (completări).",
+          "Sub grafic vezi „Distribuția răspunsurilor (top)” pe câteva dimensiuni (Nivel/Stil/Distanță/Prioritate/Preferințe/Buget).",
+        ],
+        bullets: [
+          "Rata de completare: completări / starts în perioada selectată.",
+          "Dacă nu există date în perioada aleasă, apare mesajul „Nu există date în perioada selectată.”",
+        ],
+      },
+      {
+        title: "Cereri către specialist (activitate)",
+        paragraphs: [
+          "Graficul agregă cererile pe zile, pentru perioada selectată (7 / 30 / 90 zile).",
+          "Poți schimba metrica afișată: Total / Noi / În lucru / Trimise.",
+        ],
+      },
+      {
+        title: "Cereri recente",
+        paragraphs: [
+          "Tabelul arată ultimele cereri (implicit: 8) pentru statusul „nou”, cu data creării, chestionarul asociat și datele de contact.",
+        ],
+        bullets: [
+          "„Vezi” deschide cererea (detalii + răspuns).",
+          "„Vezi toate cererile” te duce în lista completă de cereri.",
         ],
       },
       {
         title: "Note",
         notes: [
           "Dacă apare o eroare de acces, verifică dacă ești conectat cu un cont de administrator.",
-          "Pentru actualizare, reîncarcă pagina (sau folosește butoanele „Reîmprospătează” din paginile listă).",
+          "Pentru actualizare, reîncarcă pagina. Graficele se recitesc și când schimbi chestionarul / perioada / metrica.",
         ],
       },
     ],
@@ -61,21 +92,27 @@ export const HELP_CONTENT: Record<HelpKey, { title: string; sections: HelpSectio
         bullets: [
           "Apasă „Creează chestionar” pentru a adăuga un chestionar nou.",
           "Apasă „Editează” pentru a modifica titlul, starea „Activ” și pentru a gestiona întrebările.",
-          "Folosește switch-ul „Activ” pentru a afișa/ascunde chestionarul în aplicație.",
-          "Folosește „Reîmprospătează” pentru a actualiza lista.",
+          "Folosește switch-ul „Activ” pentru a activa/dezactiva chestionarul (vizibil în aplicație).",
+          "Folosește „Reîmprospătează” pentru a reciti prima pagină a listei.",
+          "Folosește „Încarcă mai multe” pentru a încărca următoarele rezultate.",
+          "Apasă „Șterge” pentru a elimina un chestionar (cu confirmare).",
         ],
       },
       {
-        title: "Câmpuri importante",
+        title: "Ce înseamnă coloanele",
         bullets: [
-          "title: titlul chestionarului.",
-          "active: dacă este activ, chestionarul este disponibil în aplicație.",
-          "updatedAt: data ultimei actualizări.",
+          "Titlu: numele chestionarului.",
+          "Activ: dacă este pornit, chestionarul este disponibil în aplicație.",
+          "Actualizat: data ultimei actualizări.",
+          "Acțiuni: „Editează” / „Șterge”.",
         ],
       },
       {
         title: "Note",
-        notes: ["Dacă ai multe chestionare, folosește „Încarcă mai multe” pentru a vedea următoarele rezultate."],
+        notes: [
+          "La „Șterge” se șterge și conținutul chestionarului (întrebările lui).",
+          "Dacă ai multe chestionare, folosește „Încarcă mai multe” pentru a vedea următoarele rezultate.",
+        ],
       },
     ],
   },
@@ -106,29 +143,35 @@ export const HELP_CONTENT: Record<HelpKey, { title: string; sections: HelpSectio
       {
         title: "Ce faci aici",
         paragraphs: [
-          "Editezi chestionarul și gestionezi întrebările din el.",
-          "Întrebările controlează ce întrebări vede utilizatorul în aplicație.",
+          "Editezi chestionarul (Titlu + Activ) și gestionezi întrebările din el.",
+          "Întrebările controlează ce vede utilizatorul în aplicație și cum se calculează recomandările (în funcție de „Cheie”).",
         ],
       },
       {
-        title: "Întrebări — cum funcționează",
+        title: "Lista de întrebări (tabel)",
         bullets: [
-          "Ordinea este dată de câmpul „Ordine” (mai mic = mai sus).",
-          "Dacă întrebarea este „Activă”, ea apare în aplicație.",
-          "Pentru întrebările cu opțiuni (selectare), poți ordona opțiunile și le poți activa/dezactiva.",
+          "„Ordine” (order): mai mic = întrebarea apare mai sus în chestionar.",
+          "„Cheie”: ce categorie/dimensiune reprezintă răspunsul (ex: level/style/distance/priority, sau chei din Vocabulary).",
+          "„Tip”: cum răspunde utilizatorul (selectare unică / selectare multiplă / text / interval).",
+          "„Activ”: dacă este „Da”, întrebarea apare utilizatorilor.",
+          "„Editează” deschide editorul de întrebare (dialog).",
         ],
       },
       {
-        title: "Chei și tipuri",
+        title: "Editorul de întrebare (dialog)",
         bullets: [
-          "Cheie: nivel / stil / distanță / prioritate / preferințe / buget.",
-          "Tip: selectare unică / selectare multiplă / text / interval.",
+          "Poți adăuga o întrebare nouă din „Adaugă întrebare” sau edita una existentă din tabel.",
+          "Câmpuri: Cheie, Tip, Text întrebare, Ordine, Activ, Text de ajutor (opțional).",
+          "Validare: „Obligatoriu”, iar pentru tipul „Interval” poți seta Minim/Maxim.",
+          "Opțiuni (pentru tipurile de selectare): fie le gestionezi manual, fie se sincronizează din Vocabulary (dacă „Cheie” este din Vocabulary).",
+          "Pentru chei din Vocabulary: opțiunile sunt „Gestionat în Vocabulary”, poți „Reîncarcă din Vocabulary” sau „Deschide Vocabulary”.",
+          "Din editor poți și șterge o întrebare (butonul „Șterge”, când editezi o întrebare existentă).",
         ],
       },
       {
         title: "Note",
         notes: [
-          "După salvare, lista se actualizează.",
+          "După „Salvează chestionarul” sau după salvarea unei întrebări, lista se recitește și se actualizează.",
           "Recomandare: păstrează întrebările simple și clare pentru utilizatori.",
         ],
       },
@@ -164,22 +207,44 @@ export const HELP_CONTENT: Record<HelpKey, { title: string; sections: HelpSectio
     sections: [
       {
         title: "Ce faci aici",
-        paragraphs: ["Creezi un produs nou. Acesta va putea fi selectat ulterior în regulile de recomandare."],
+        paragraphs: [
+          "Creezi un produs nou pentru recomandări. Poți să îl adaugi manual sau să îl imporți din PrestaShop.",
+        ],
+      },
+      {
+        title: "Sursă (Manual / PrestaShop)",
+        paragraphs: [
+          "Manual: completezi câmpurile și (opțional) încarci imagini în Firebase Storage.",
+          "PrestaShop: cauți un produs, îl selectezi, iar formularul se completează automat cu detalii (nume, preț, imagini).",
+        ],
+        bullets: [
+          "„Caută produs” deschide selectorul pentru import.",
+          "Dacă produsul este deja importat, vei vedea mesajul și poți apăsa „Deschide produsul”.",
+        ],
       },
       {
         title: "Câmpuri importante",
         bullets: [
+          "Activ: dacă este activ, produsul poate fi folosit în recomandări.",
           "Nume / Brand: datele afișate în listă și în selectoarele de produse.",
-          "Preț + Monedă: folosite pentru afișare și filtrări viitoare (dacă se adaugă).",
-          "Etichete (level/style/distance): folosite la potrivirea cu regulile.",
-          "Atribute (control/spin/viteză/greutate): informații suplimentare (opțional).",
+          "Preț + Monedă: valori folosite la afișare și în regulile de buget (dacă există).",
+          "Atribute (Control/Rotire/Viteză/Greutate): informații opționale, utile în analiză și viitoare filtrări.",
         ],
       },
       {
-        title: "Imagine produs",
+        title: "Reguli recomandare",
+        paragraphs: ["Poți adăuga una sau mai multe reguli (scenarii) care spun când produsul este recomandat."],
         bullets: [
-          "Poți lipi un URL de imagine sau poți încărca o imagine direct din calculator.",
-          "După încărcare, imaginea va fi legată automat de produs.",
+          "Fiecare regulă are: Activ, Ordine, condiții (Nivel/Stil/Distanță/Prioritate) și o „Explicație”.",
+          "„Adaugă regulă” creează o regulă nouă; „Editează” deschide dialogul; „Șterge” elimină regula.",
+        ],
+      },
+      {
+        title: "Imagini produs",
+        bullets: [
+          "Manual: poți adăuga poze (upload). Încărcarea efectivă în Firebase se face la „Salvează produsul”.",
+          "Poți elimina poze înainte de salvare (ne-salvate) sau poți marca poze existente pentru ștergere (se șterg după salvare).",
+          "PrestaShop: imaginile sunt preluate ca URL-uri (nu sunt încărcate în Firebase). Le poți deschide într-un tab nou din previzualizare.",
         ],
       },
     ],
@@ -253,6 +318,109 @@ export const HELP_CONTENT: Record<HelpKey, { title: string; sections: HelpSectio
         notes: [
           "După ce trimiți răspunsul, utilizatorul îl va vedea în aplicație.",
           "Dacă ai schimbat ceva și nu se vede imediat, revino la listă și deschide din nou cererea.",
+        ],
+      },
+    ],
+  },
+
+  "questionnaire-completions.list": {
+    title: "Ajutor — Chestionare completate (Listă)",
+    sections: [
+      {
+        title: "Ce faci aici",
+        paragraphs: [
+          "Vezi istoricul completărilor de chestionar: date de contact, utilizator (anonim/autentificat), dacă există o cerere către specialist și câte produse au fost recomandate.",
+        ],
+      },
+      {
+        title: "Filtre",
+        bullets: [
+          "Chestionar: restrânge lista la un chestionar anume.",
+          "De la data / Până la data: filtrează după intervalul în care au fost create completările.",
+          "„Aplică filtre” folosește valorile curente din filtre; „Șterge” revine la toate.",
+        ],
+      },
+      {
+        title: "Pași tipici",
+        bullets: [
+          "Selectează un chestionar și un interval de timp, apoi apasă „Aplică filtre”.",
+          "Apasă „Vezi” pentru a deschide detaliile unei completări (răspunsuri + recomandări).",
+          "Folosește „Reîmprospătează” și „Încarcă mai multe” pentru a actualiza lista.",
+        ],
+      },
+      {
+        title: "Note",
+        notes: [
+          "Intervalul de timp este interpretat la începutul zilei (00:00) pentru datele selectate.",
+          "Dacă nu apar rezultate, verifică filtrele sau apasă „Șterge”.",
+        ],
+      },
+    ],
+  },
+
+  "questionnaire-completions.detail": {
+    title: "Ajutor — Chestionar completat (Detalii)",
+    sections: [
+      {
+        title: "Ce vezi aici",
+        paragraphs: [
+          "Detaliile unei completări: datele utilizatorului, răspunsurile (ordonate după „order” acolo unde există întrebarea), produsele recomandate și (dacă există) link către cererea către specialist asociată.",
+        ],
+      },
+      {
+        title: "Recomandări și cerere specialist",
+        bullets: [
+          "Recomandările listate sunt cele salvate pe completare la momentul calculului.",
+          "Dacă există „Cerere specialist”, poți deschide direct cererea pentru a răspunde/actualiza statusul.",
+        ],
+      },
+      {
+        title: "Note",
+        notes: [
+          "Dacă vezi etichete de întrebare ca ID, înseamnă că întrebarea nu mai există (a fost ștearsă/renumită) sau nu s-a putut încărca.",
+        ],
+      },
+    ],
+  },
+
+  vocabulary: {
+    title: "Ajutor — Vocabulary",
+    sections: [
+      {
+        title: "Ce este Vocabulary",
+        paragraphs: [
+          "Vocabulary este dicționarul de valori (ex: Nivel/Stil/Distanță/Prioritate) folosit în chestionare și în regulile de recomandare ale produselor.",
+        ],
+      },
+      {
+        title: "Inițializare",
+        paragraphs: [
+          "Dacă vezi mesajul „Vocabulary nu este inițializat”, apasă „Initialize vocabulary” ca să fie create documentele necesare.",
+        ],
+      },
+      {
+        title: "Categorii și valori",
+        bullets: [
+          "Categorie: definește o cheie tehnică (key) și un set de valori (opțiuni) asociate.",
+          "Valoare: are Label (text), Order (ordine) și Active (vizibilă).",
+          "Order controlează ordinea în liste; Active controlează dacă apare utilizatorilor.",
+        ],
+      },
+      {
+        title: "Acțiuni",
+        bullets: [
+          "„Adaugă categorie” creează o categorie nouă.",
+          "Butonul „+” din card adaugă o valoare în categoria respectivă.",
+          "„Editează” modifică label/order/active (ID-ul tehnic rămâne neschimbat).",
+          "„Șterge” elimină categoria/valoarea din Vocabulary fără să modifice datele deja salvate în produse/chestionare.",
+          "„Reîmprospătează” recitește categoriile și valorile.",
+        ],
+      },
+      {
+        title: "Note",
+        notes: [
+          "„Adaugă valori inițiale” apare doar când nu există încă valori în Vocabulary (pentru instalări noi/seed).",
+          "Cheile din Vocabulary pot fi folosite în editorul de întrebări; pentru aceste chei, opțiunile se pot sincroniza automat din Vocabulary.",
         ],
       },
     ],
