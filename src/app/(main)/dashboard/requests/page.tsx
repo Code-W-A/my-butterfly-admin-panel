@@ -12,7 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
 import { getQuestionnaire, listQuestionnaires } from "@/lib/firestore/questionnaires";
 import { listSpecialistRequestsPage } from "@/lib/firestore/requests";
-import type { SpecialistRequest, WithId } from "@/lib/firestore/types";
+import type { Questionnaire, SpecialistRequest, WithId } from "@/lib/firestore/types";
 
 type RequestItem = WithId<SpecialistRequest> & { userId: string };
 
