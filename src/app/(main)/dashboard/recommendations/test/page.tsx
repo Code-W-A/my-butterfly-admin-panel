@@ -246,7 +246,7 @@ export default function RecommendationTestPage() {
     priority: {},
   });
 
-  const openProductUrl = useCallback(async (product: Product) => {
+  const openProductUrl = useCallback(async (product: WithId<Product>) => {
     const fallbackUrl = product.productUrl;
     if (!fallbackUrl) return;
     let resolvedUrl = fallbackUrl;
