@@ -1,6 +1,11 @@
 "use client";
 
-import { BadgeCheck, Bell, CreditCard, LogOut } from "lucide-react";
+import { useState } from "react";
+
+import { useRouter } from "next/navigation";
+
+import { signOut } from "firebase/auth";
+import { BadgeCheck, LogOut } from "lucide-react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -12,14 +17,29 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useAuthUser } from "@/hooks/use-auth-user";
+import { initFirebase } from "@/lib/firebase/client";
 import { getInitials } from "@/lib/utils";
 
 export function AccountSwitcher() {
   const { user } = useAuthUser();
+  const router = useRouter();
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const displayName = "Admin System";
   const displayEmail = user?.email ?? "—";
   const displayAvatar = user?.photoURL ?? "";
+
+  const handleLogout = async () => {
+    setIsLoggingOut(true);
+    try {
+      const { auth } = initFirebase();
+      if (!auth) return;
+      await signOut(auth);
+      router.replace("/login");
+    } finally {
+      setIsLoggingOut(false);
+    }
+  };
 
   return (
     <DropdownMenu>
@@ -50,9 +70,15 @@ export function AccountSwitcher() {
           </DropdownMenuItem>
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
-        <DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={isLoggingOut}
+          onSelect={(event) => {
+            event.preventDefault();
+            void handleLogout();
+          }}
+        >
           <LogOut />
-          Deconectare
+          {isLoggingOut ? "Se deconectează..." : "Deconectare"}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
