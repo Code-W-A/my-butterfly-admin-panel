@@ -12,16 +12,19 @@ import { z } from "zod";
 import { VocabularyMultiSelect } from "@/components/mybutterfly/forms/vocabulary-multi-select";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
 import { deleteProductImage, uploadProductImage } from "@/lib/firebase/storage.client";
-import type { Product, ProductRecommendationScenario, WithId } from "@/lib/firestore/types";
+import { listRuleSets } from "@/lib/firestore/recommendation-rule-sets";
+import type { Product, ProductRecommendationScenario, RecommendationRuleSet, WithId } from "@/lib/firestore/types";
 import { listVocabularyKeys, type VocabularyCategory } from "@/lib/firestore/vocabulary";
 
 const optionalNumber = z.preprocess(
@@ -178,6 +181,11 @@ export function ProductForm({
   const [isScenarioDialogOpen, setIsScenarioDialogOpen] = useState(false);
   const [editingScenarioIndex, setEditingScenarioIndex] = useState<number | null>(null);
   const [scenarioDialogMode, setScenarioDialogMode] = useState<"add" | "edit">("edit");
+  const [isRuleSetDialogOpen, setIsRuleSetDialogOpen] = useState(false);
+  const [ruleSets, setRuleSets] = useState<WithId<RecommendationRuleSet>[]>([]);
+  const [ruleSetSelection, setRuleSetSelection] = useState<string[]>([]);
+  const [isRuleSetLoading, setIsRuleSetLoading] = useState(false);
+  const [ruleSetError, setRuleSetError] = useState<string | null>(null);
   const [vocabularyCategories, setVocabularyCategories] = useState<WithId<VocabularyCategory>[]>([]);
   const [vocabularyError, setVocabularyError] = useState<string | null>(null);
   const sortedVocabularyCategories = useMemo(
@@ -188,6 +196,8 @@ export function ProductForm({
     () => sortedVocabularyCategories.map((category) => category.key),
     [sortedVocabularyCategories],
   );
+
+  const ruleSetSelectionSet = useMemo(() => new Set(ruleSetSelection), [ruleSetSelection]);
 
   useEffect(() => {
     pendingFilesRef.current = pendingFiles;
@@ -230,6 +240,25 @@ export function ProductForm({
         setVocabularyCategories([]);
       });
   }, []);
+
+  useEffect(() => {
+    if (!isRuleSetDialogOpen) return;
+    setIsRuleSetLoading(true);
+    setRuleSetError(null);
+    listRuleSets()
+      .then((items) => {
+        setRuleSets(items);
+      })
+      .catch((err) => {
+        logFirebaseError("Products: loadRuleSets", err);
+        const info = getFirebaseErrorInfo(err);
+        setRuleSetError(info.message || "Nu pot încărca seturile de reguli.");
+        setRuleSets([]);
+      })
+      .finally(() => {
+        setIsRuleSetLoading(false);
+      });
+  }, [isRuleSetDialogOpen]);
 
   useEffect(() => {
     if (!prefillValues) return;
@@ -379,6 +408,32 @@ export function ProductForm({
     setIsScenarioDialogOpen(true);
   };
 
+  const handleImportRuleSets = () => {
+    if (ruleSetSelection.length === 0) return;
+    const selectedSets = ruleSets.filter((item) => ruleSetSelectionSet.has(item.id));
+    if (selectedSets.length === 0) return;
+    setScenarios((prev) => {
+      const maxOrder = prev.length ? Math.max(...prev.map((s) => s.order)) : -1;
+      let nextOrder = maxOrder + 1;
+      const additions: ScenarioDraft[] = [];
+      selectedSets.forEach((set) => {
+        const source = set.scenario ?? set.scenarios?.[0];
+        if (!source) return;
+        additions.push({
+          id: generateClientId(),
+          active: source.active,
+          order: nextOrder,
+          explanationTemplate: source.explanationTemplate ?? "",
+          conditions: buildConditionMap(vocabularyKeys, source.conditions),
+        });
+        nextOrder += 1;
+      });
+      return [...prev, ...additions];
+    });
+    setIsRuleSetDialogOpen(false);
+    setRuleSetSelection([]);
+  };
+
   const openScenarioDialog = (index: number) => {
     setEditingScenarioIndex(index);
     setScenarioDialogMode("edit");
@@ -509,7 +564,10 @@ export function ProductForm({
               </div>
             )}
 
-            <div className="flex items-center justify-end">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setIsRuleSetDialogOpen(true)}>
+                Importă reguli
+              </Button>
               <Button
                 type="button"
                 variant="outline"
@@ -611,6 +669,70 @@ export function ProductForm({
                 </div>
               </div>
             ) : null}
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={isRuleSetDialogOpen}
+          onOpenChange={(open) => {
+            setIsRuleSetDialogOpen(open);
+            if (!open) setRuleSetSelection([]);
+          }}
+        >
+          <DialogContent className="sm:max-w-3xl">
+            <DialogTitle>Importă reguli</DialogTitle>
+            <DialogDescription>Alege unul sau mai multe seturi de reguli.</DialogDescription>
+            <div className="space-y-4">
+              {ruleSetError ? <div className="text-destructive text-sm">{ruleSetError}</div> : null}
+              <ScrollArea className="max-h-[360px] rounded-md border">
+                <div className="space-y-3 p-4">
+                  {isRuleSetLoading ? (
+                    <div className="text-muted-foreground text-sm">Se încarcă seturile...</div>
+                  ) : ruleSets.length === 0 ? (
+                    <div className="text-muted-foreground text-sm">Nu există reguli.</div>
+                  ) : (
+                    ruleSets.map((set) => {
+                      const isChecked = ruleSetSelectionSet.has(set.id);
+                      const toggle = () =>
+                        setRuleSetSelection((prev) =>
+                          prev.includes(set.id) ? prev.filter((id) => id !== set.id) : [...prev, set.id],
+                        );
+                      return (
+                        <button
+                          key={set.id}
+                          type="button"
+                          className="flex items-start gap-3 rounded-md border p-3 text-sm"
+                          onClick={toggle}
+                        >
+                          <Checkbox
+                            checked={isChecked}
+                            onCheckedChange={() => {
+                              /* handled by row click */
+                            }}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              toggle();
+                            }}
+                          />
+                          <div className="flex-1">
+                            <div className="font-medium">{set.title}</div>
+                            <div className="text-muted-foreground text-xs">1 regulă</div>
+                          </div>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </ScrollArea>
+              <div className="flex items-center justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setIsRuleSetDialogOpen(false)}>
+                  Anulează
+                </Button>
+                <Button type="button" onClick={handleImportRuleSets} disabled={ruleSetSelection.length === 0}>
+                  Importă reguli
+                </Button>
+              </div>
+            </div>
           </DialogContent>
         </Dialog>
 

@@ -21,6 +21,7 @@ import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SortableTableHead, type SortState } from "@/components/ui/sortable-table-head";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
@@ -50,6 +51,7 @@ const categorySchema = z.object({
   title: z.string().min(1),
   key: z.string().optional(),
   description: z.string().optional(),
+  standardQuestion: z.string().optional(),
   order: z.coerce.number().int().min(0).optional(),
   active: z.boolean().optional(),
 });
@@ -181,6 +183,7 @@ export default function VocabularyPage() {
   const [error, setError] = useState<string | null>(null);
   const [categories, setCategories] = useState<WithId<VocabularyCategory>[]>([]);
   const [optionsByKey, setOptionsByKey] = useState<Record<string, VocabularyOption[]>>({});
+  const [optionSortByKey, setOptionSortByKey] = useState<Record<string, SortState<"order" | "label" | "active">>>({});
   const [addOptionKey, setAddOptionKey] = useState<string | null>(null);
   const [addDraft, setAddDraft] = useState<{ label: string; order: string; active: boolean }>({
     label: "",
@@ -194,12 +197,14 @@ export default function VocabularyPage() {
     title: string;
     key: string;
     description: string;
+    standardQuestion: string;
     order: string;
     active: boolean;
   }>({
     title: "",
     key: "",
     description: "",
+    standardQuestion: "",
     order: "",
     active: true,
   });
@@ -246,6 +251,22 @@ export default function VocabularyPage() {
     return result;
   }, [optionsByKey, categories]);
 
+  const getSortedOptions = useCallback(
+    (categoryKey: string) => {
+      const base = sortedOptionsByKey[categoryKey] ?? [];
+      const sort = optionSortByKey[categoryKey] ?? { key: "order", dir: "asc" };
+      const dir = sort.dir === "desc" ? -1 : 1;
+      const next = [...base];
+      next.sort((a, b) => {
+        if (sort.key === "order") return dir * ((a.order ?? 0) - (b.order ?? 0));
+        if (sort.key === "label") return dir * (a.label ?? "").localeCompare(b.label ?? "");
+        return dir * (Number(a.active) - Number(b.active));
+      });
+      return next;
+    },
+    [optionSortByKey, sortedOptionsByKey],
+  );
+
   const sortedCategories = useMemo(() => categories.slice().sort((a, b) => a.order - b.order), [categories]);
 
   const openCategoryDialog = (category?: WithId<VocabularyCategory>) => {
@@ -255,6 +276,7 @@ export default function VocabularyPage() {
         title: category.title,
         key: category.key,
         description: category.description ?? "",
+        standardQuestion: category.standardQuestion ?? "",
         order: `${category.order ?? 0}`,
         active: category.active,
       });
@@ -264,6 +286,7 @@ export default function VocabularyPage() {
         title: "",
         key: "",
         description: "",
+        standardQuestion: "",
         order: `${sortedCategories.length}`,
         active: true,
       });
@@ -450,21 +473,54 @@ export default function VocabularyPage() {
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead>Order</TableHead>
-                            <TableHead>Label</TableHead>
-                            <TableHead>Activ</TableHead>
+                            <SortableTableHead
+                              sortKey="order"
+                              sort={optionSortByKey[category.key] ?? { key: "order", dir: "asc" }}
+                              onSortChange={(next) =>
+                                setOptionSortByKey((prev) => ({
+                                  ...prev,
+                                  [category.key]: next,
+                                }))
+                              }
+                            >
+                              Order
+                            </SortableTableHead>
+                            <SortableTableHead
+                              sortKey="label"
+                              sort={optionSortByKey[category.key] ?? { key: "order", dir: "asc" }}
+                              onSortChange={(next) =>
+                                setOptionSortByKey((prev) => ({
+                                  ...prev,
+                                  [category.key]: next,
+                                }))
+                              }
+                            >
+                              Label
+                            </SortableTableHead>
+                            <SortableTableHead
+                              sortKey="active"
+                              sort={optionSortByKey[category.key] ?? { key: "order", dir: "asc" }}
+                              onSortChange={(next) =>
+                                setOptionSortByKey((prev) => ({
+                                  ...prev,
+                                  [category.key]: next,
+                                }))
+                              }
+                            >
+                              Activ
+                            </SortableTableHead>
                             <TableHead className="text-right">Acțiuni</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {(sortedOptionsByKey[category.key] ?? []).length === 0 ? (
+                          {getSortedOptions(category.key).length === 0 ? (
                             <TableRow>
                               <TableCell colSpan={4} className="text-muted-foreground text-sm">
                                 Nu există valori încă.
                               </TableCell>
                             </TableRow>
                           ) : (
-                            (sortedOptionsByKey[category.key] ?? []).map((opt) => (
+                            getSortedOptions(category.key).map((opt) => (
                               <TableRow key={opt.value}>
                                 <TableCell className="w-24">{opt.order ?? 0}</TableCell>
                                 <TableCell className="min-w-48">{opt.label}</TableCell>
@@ -655,6 +711,17 @@ export default function VocabularyPage() {
                 placeholder="ex: Începător / intermediar / avansat"
               />
             </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label className="flex items-center gap-2">
+                <InfoTip text="Textul standard al întrebării. La selectarea categoriei în editor, se completează automat." />
+                Întrebare standard (opțional)
+              </Label>
+              <Input
+                value={categoryDraft.standardQuestion}
+                onChange={(e) => setCategoryDraft((prev) => ({ ...prev, standardQuestion: e.target.value }))}
+                placeholder="ex: Care este nivelul tău?"
+              />
+            </div>
             <div className="space-y-2">
               <Label className="flex items-center gap-2">
                 <InfoTip text="Ordinea în care apar categoriile pe pagină și în liste. Mai mic = mai sus." />
@@ -693,6 +760,7 @@ export default function VocabularyPage() {
                     title: categoryDraft.title,
                     key: categoryDraft.key.trim() || undefined,
                     description: categoryDraft.description.trim() || undefined,
+                    standardQuestion: categoryDraft.standardQuestion.trim() || undefined,
                     order: categoryDraft.order.trim() ? Number(categoryDraft.order) : undefined,
                     active: categoryDraft.active,
                   });
@@ -700,6 +768,7 @@ export default function VocabularyPage() {
                     await updateVocabularyKey(editingCategory.key, {
                       title: parsed.title,
                       description: parsed.description,
+                      standardQuestion: parsed.standardQuestion,
                       order: parsed.order,
                       active: parsed.active,
                     });
@@ -708,6 +777,7 @@ export default function VocabularyPage() {
                       key: parsed.key ?? parsed.title,
                       title: parsed.title,
                       description: parsed.description,
+                      standardQuestion: parsed.standardQuestion,
                       order: parsed.order,
                       active: parsed.active,
                     });

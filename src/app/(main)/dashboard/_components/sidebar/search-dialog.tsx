@@ -3,7 +3,16 @@ import * as React from "react";
 
 import { useRouter } from "next/navigation";
 
-import { ChartBar, FlaskConical, Forklift, Gauge, LayoutDashboard, Search, ShoppingBag } from "lucide-react";
+import {
+  ChartBar,
+  FlaskConical,
+  Forklift,
+  LayoutDashboard,
+  ListChecks,
+  Search,
+  Settings,
+  ShoppingBag,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -20,7 +29,8 @@ const searchItems = [
   { group: "My Butterfly", icon: LayoutDashboard, label: "Panou", url: "/dashboard" },
   { group: "My Butterfly", icon: ChartBar, label: "Chestionare", url: "/dashboard/questionnaires" },
   { group: "My Butterfly", icon: ShoppingBag, label: "Produse", url: "/dashboard/products" },
-  { group: "My Butterfly", icon: Gauge, label: "Reguli", url: "/dashboard/products" },
+  { group: "My Butterfly", icon: ListChecks, label: "Reguli recomandări", url: "/dashboard/recommendation-rules" },
+  { group: "My Butterfly", icon: Settings, label: "Setări", url: "/dashboard/settings" },
   { group: "My Butterfly", icon: Forklift, label: "Cereri", url: "/dashboard/requests" },
   { group: "My Butterfly", icon: FlaskConical, label: "Test recomandări", url: "/dashboard/recommendations/test" },
 ];

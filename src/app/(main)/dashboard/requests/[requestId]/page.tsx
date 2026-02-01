@@ -29,8 +29,10 @@ import {
   setSpecialistRequestReply,
   updateSpecialistRequestStatus,
 } from "@/lib/firestore/requests";
+import { getRecommendationSettings } from "@/lib/firestore/settings";
 import type { Product, Questionnaire, QuestionnaireQuestion, SpecialistRequest, WithId } from "@/lib/firestore/types";
-import { listVocabularyOptions } from "@/lib/firestore/vocabulary";
+import { listVocabularyKeys, listVocabularyOptions } from "@/lib/firestore/vocabulary";
+import { matchProductScenarios, type RecommendationInput } from "@/lib/recommendations/match";
 
 type RequestWithUser = WithId<SpecialistRequest> & { userId: string };
 
@@ -49,16 +51,139 @@ const formatStatus = (status: SpecialistRequest["status"]) => {
   }
 };
 
-const formatAnswerValue = (value: unknown) => {
-  if (Array.isArray(value)) return value.map((item) => String(item)).join(", ");
+const formatAnswerValue = (
+  value: unknown,
+  question?: QuestionnaireQuestion,
+  vocabOptionMaps?: Record<string, Record<string, string>>,
+) => {
+  const optionMap = question?.options ? Object.fromEntries(question.options.map((opt) => [opt.value, opt.label])) : {};
+  const fallbackMap = question?.key ? vocabOptionMaps?.[question.key] : undefined;
+  const toLabel = (val: unknown) => {
+    const key = String(val ?? "").trim();
+    if (!key) return "—";
+    return optionMap[key] ?? fallbackMap?.[key] ?? key;
+  };
+  if (Array.isArray(value)) return value.map((item) => toLabel(item)).join(", ");
   if (typeof value === "object" && value) {
     const range = value as RangeAnswer;
     if (range.min !== undefined || range.max !== undefined) {
       return `${range.min ?? "—"} - ${range.max ?? "—"}`;
     }
+    return JSON.stringify(value);
   }
   if (value === undefined || value === null) return "—";
-  return String(value);
+  return toLabel(value);
+};
+
+const formatSkippedReason = (reason?: string) => {
+  if (reason === "inactive") return "Întrebare inactivă";
+  if (reason === "prerequisite_not_answered") return "Întrebare necesară necompletată";
+  if (reason === "rule_not_met") return "Regulă de afișare neîndeplinită";
+  return "Întrebare sărită";
+};
+
+const getSkippedBadgeClass = (reason?: string) => {
+  if (reason === "inactive") return "border-slate-400 text-slate-700 dark:text-slate-300";
+  if (reason === "prerequisite_not_answered") return "border-amber-500 text-amber-700 dark:text-amber-300";
+  if (reason === "rule_not_met") return "border-rose-500 text-rose-700 dark:text-rose-300";
+  return "border-muted-foreground text-muted-foreground";
+};
+
+const asTrimmedString = (value: unknown) => {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+};
+
+const asNumber = (value: unknown) => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+};
+
+const asStringArray = (value: unknown) => {
+  if (Array.isArray(value)) {
+    return value.map((item) => (typeof item === "string" ? item.trim() : "")).filter(Boolean);
+  }
+  const single = asTrimmedString(value);
+  return single ? [single] : [];
+};
+
+const asSingleChoice = (value: unknown) => {
+  const values = asStringArray(value);
+  return values[0];
+};
+
+const parseRangeAnswer = (value: unknown) => {
+  if (!value || typeof value !== "object") return { min: undefined, max: undefined };
+  const range = value as RangeAnswer;
+  return {
+    min: asNumber(range.min),
+    max: asNumber(range.max),
+  };
+};
+
+const parsePreferences = (value: string) =>
+  value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const buildRecommendationInput = (questions: WithId<QuestionnaireQuestion>[], answers: Record<string, unknown>) => {
+  const getAnswerByKey = (key: QuestionnaireQuestion["key"]) => {
+    const question = questions.find((item) => item.active && item.key === key);
+    return question ? answers[question.id] : undefined;
+  };
+
+  const selectionsByKey = questions.reduce<Record<string, string[]>>((acc, question) => {
+    if (!question.active) return acc;
+    const answer = answers[question.id];
+    if (question.type === "single_select") {
+      const selected = asSingleChoice(answer);
+      if (selected) acc[question.key] = [selected];
+      return acc;
+    }
+    if (question.type === "multi_select") {
+      const selected = asStringArray(answer);
+      if (selected.length) acc[question.key] = selected;
+    }
+    return acc;
+  }, {});
+
+  const level = asSingleChoice(getAnswerByKey("level"));
+  const style = asSingleChoice(getAnswerByKey("style"));
+  const distance = asSingleChoice(getAnswerByKey("distance"));
+  const priority = asSingleChoice(getAnswerByKey("priority"));
+
+  const budgetAnswer = getAnswerByKey("budget");
+  const budgetNumber = asNumber(budgetAnswer);
+  const budgetRange = parseRangeAnswer(budgetAnswer);
+
+  const preferencesAnswer = getAnswerByKey("preferences");
+  const preferences = Array.isArray(preferencesAnswer)
+    ? asStringArray(preferencesAnswer)
+    : typeof preferencesAnswer === "string"
+      ? parsePreferences(preferencesAnswer)
+      : [];
+
+  const input: RecommendationInput = {
+    level,
+    style,
+    distance,
+    priority,
+    budget: budgetNumber,
+    budgetMin: budgetRange.min,
+    budgetMax: budgetRange.max,
+    preferences: preferences.length ? preferences : undefined,
+    selectionsByKey: Object.keys(selectionsByKey).length ? selectionsByKey : undefined,
+  };
+
+  return input;
 };
 
 const formSchema = z.object({
@@ -81,10 +206,12 @@ export default function RequestDetailPage() {
     style: {},
     distance: {},
   });
+  const [answerOptionMaps, setAnswerOptionMaps] = useState<Record<string, Record<string, string>>>({});
   const [questionnaire, setQuestionnaire] = useState<WithId<Questionnaire> | null>(null);
   const [questions, setQuestions] = useState<WithId<QuestionnaireQuestion>[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+  const [minMatchPercent, setMinMatchPercent] = useState<number>(65);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -98,6 +225,47 @@ export default function RequestDetailPage() {
     "Răspunsul tău va fi vizibil în aplicația mobilă și trimis pe emailul introdus de utilizator.";
 
   const productMap = useMemo(() => new Map(products.map((item) => [item.id, item])), [products]);
+  const combinedProducts = useMemo(() => {
+    const byId = new Map<string, WithId<Product>>();
+    generatedProducts.forEach((product) => {
+      byId.set(product.id, product);
+    });
+    replyProducts.forEach((product) => {
+      byId.set(product.id, product);
+    });
+    return [...byId.values()];
+  }, [generatedProducts, replyProducts]);
+  const answersList = useMemo(() => {
+    if (!request) return [];
+    const answerMap = request.answers ?? {};
+    const skippedMap = new Map((request.skippedQuestions ?? []).map((item) => [item.questionId, item.reason]));
+    const entries = questions.map((question) => {
+      const value = answerMap[question.id];
+      const skippedReason = skippedMap.get(question.id);
+      return {
+        id: question.id,
+        label: question.label ?? "Întrebare ștearsă",
+        order: question.order ?? 999,
+        value,
+        question,
+        status: skippedReason ? "skipped" : value !== undefined ? "answered" : "unknown",
+        skippedReason,
+      };
+    });
+    return entries.filter((entry) => entry.status !== "unknown").sort((a, b) => a.order - b.order);
+  }, [questions, request]);
+  const skippedList = useMemo(() => answersList.filter((entry) => entry.status === "skipped"), [answersList]);
+  const matchPercentById = useMemo(() => {
+    if (!request || combinedProducts.length === 0 || questions.length === 0) return new Map<string, number>();
+    const input = buildRecommendationInput(questions, request.answers ?? {});
+    const askedKeys = request.askedQuestionIds
+      ? request.askedQuestionIds
+          .map((id) => questions.find((q) => q.id === id)?.key)
+          .filter((key): key is string => Boolean(key))
+      : undefined;
+    const matches = matchProductScenarios({ products: combinedProducts, input, minMatchPercent, askedKeys });
+    return new Map(matches.map((match) => [match.product.id, match.matchPercent]));
+  }, [combinedProducts, minMatchPercent, questions, request]);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -148,8 +316,55 @@ export default function RequestDetailPage() {
   }, [form, requestId]);
 
   useEffect(() => {
+    if (questions.length === 0) {
+      setAnswerOptionMaps({});
+      return;
+    }
+    let isCancelled = false;
+    const loadAnswerMaps = async () => {
+      try {
+        const categories = await listVocabularyKeys({ includeInactive: true });
+        const categoryKeys = new Set(categories.map((item) => item.key));
+        const questionKeys = Array.from(new Set(questions.map((q) => q.key).filter(Boolean)));
+        const keysToLoad = questionKeys.filter((key) => categoryKeys.has(key));
+        if (keysToLoad.length === 0) {
+          if (!isCancelled) setAnswerOptionMaps({});
+          return;
+        }
+        const entries = await Promise.all(
+          keysToLoad.map(async (key) => {
+            const options = await listVocabularyOptions(key, { includeInactive: true });
+            return [key, Object.fromEntries(options.map((opt) => [opt.value, opt.label]))] as const;
+          }),
+        );
+        if (!isCancelled) {
+          setAnswerOptionMaps(Object.fromEntries(entries));
+        }
+      } catch {
+        if (!isCancelled) setAnswerOptionMaps({});
+      }
+    };
+    void loadAnswerMaps();
+    return () => {
+      isCancelled = true;
+    };
+  }, [questions]);
+
+  useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    getRecommendationSettings()
+      .then((settings) => {
+        if (settings?.minMatchPercent !== undefined) {
+          setMinMatchPercent(settings.minMatchPercent);
+        }
+      })
+      .catch(() => {
+        // ignore settings load errors
+      });
+  }, []);
 
   const updateStatus = async (status: SpecialistRequest["status"]) => {
     if (!request) return;
@@ -264,18 +479,25 @@ export default function RequestDetailPage() {
       <div className="space-y-2">
         <h2 className="font-semibold text-lg">Răspunsuri</h2>
         <div className="max-h-96 space-y-3 overflow-auto rounded-md border bg-muted p-4">
-          {questions.length > 0 ? (
-            questions
-              .filter((q) => request.answers[q.id] !== undefined)
-              .sort((a, b) => a.order - b.order)
-              .map((question) => (
-                <div key={question.id} className="rounded-md border bg-background p-3">
-                  <div className="font-medium text-sm">{question.label}</div>
-                  <div className="mt-1 text-muted-foreground text-sm">
-                    {formatAnswerValue(request.answers[question.id])}
-                  </div>
+          {answersList.length > 0 ? (
+            answersList.map((entry) => (
+              <div key={entry.id} className="rounded-md border bg-background p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="font-medium text-sm">{entry.label}</div>
+                  <Badge
+                    variant={entry.status === "skipped" ? "outline" : "secondary"}
+                    className={entry.status === "skipped" ? getSkippedBadgeClass(entry.skippedReason) : undefined}
+                  >
+                    {entry.status === "skipped" ? "Sărită" : "Răspuns"}
+                  </Badge>
                 </div>
-              ))
+                <div className="mt-1 text-muted-foreground text-sm">
+                  {entry.status === "skipped"
+                    ? formatSkippedReason(entry.skippedReason)
+                    : formatAnswerValue(entry.value, entry.question, answerOptionMaps)}
+                </div>
+              </div>
+            ))
           ) : (
             <div className="text-muted-foreground text-sm">
               {Object.keys(request.answers).length > 0
@@ -284,6 +506,27 @@ export default function RequestDetailPage() {
             </div>
           )}
         </div>
+        {skippedList.length > 0 ? (
+          <div className="rounded-md border bg-muted/30 p-4">
+            <div className="font-semibold text-sm">Întrebări sărite</div>
+            <div className="mt-3 space-y-2">
+              {skippedList.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="flex items-center justify-between gap-2 rounded-md border bg-background p-3"
+                >
+                  <div>
+                    <div className="font-medium text-sm">{entry.label}</div>
+                    <div className="text-muted-foreground text-xs">{formatSkippedReason(entry.skippedReason)}</div>
+                  </div>
+                  <Badge variant="outline" className={getSkippedBadgeClass(entry.skippedReason)}>
+                    Sărită
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
         {request.note ? (
           <div className="rounded-md border p-3 text-sm">
             <div className="font-semibold text-xs">Notițe suplimentare</div>
@@ -299,6 +542,7 @@ export default function RequestDetailPage() {
               <div className="space-y-4">
                 {generatedProducts.map((product, idx) => {
                   const gallery = buildImageGallery(product);
+                  const matchPercent = matchPercentById.get(product.id);
                   return (
                     <div
                       key={product.id}
@@ -307,9 +551,12 @@ export default function RequestDetailPage() {
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex-1 space-y-2">
                           <div className="flex items-start gap-3">
-                            <Badge variant="secondary" className="mt-0.5">
-                              #{idx + 1}
-                            </Badge>
+                            <div className="flex flex-col gap-2">
+                              <Badge variant="secondary">#{idx + 1}</Badge>
+                              {matchPercent !== undefined ? (
+                                <Badge variant="outline">Potrivire {matchPercent}%</Badge>
+                              ) : null}
+                            </div>
                             {gallery.length ? (
                               <div className="relative size-14 overflow-hidden rounded-md border bg-muted/20">
                                 <Image
@@ -374,6 +621,7 @@ export default function RequestDetailPage() {
               <div className="space-y-4">
                 {replyProducts.map((product, idx) => {
                   const gallery = buildImageGallery(product);
+                  const matchPercent = matchPercentById.get(product.id);
                   return (
                     <div
                       key={product.id}
@@ -382,9 +630,12 @@ export default function RequestDetailPage() {
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex-1 space-y-2">
                           <div className="flex items-start gap-3">
-                            <Badge variant="secondary" className="mt-0.5">
-                              #{idx + 1}
-                            </Badge>
+                            <div className="flex flex-col gap-2">
+                              <Badge variant="secondary">#{idx + 1}</Badge>
+                              {matchPercent !== undefined ? (
+                                <Badge variant="outline">Potrivire {matchPercent}%</Badge>
+                              ) : null}
+                            </div>
                             {gallery.length ? (
                               <div className="relative size-14 overflow-hidden rounded-md border bg-muted/20">
                                 <Image

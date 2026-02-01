@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -28,9 +28,21 @@ import { listProducts, updateProduct } from "@/lib/firestore/products";
 import { listQuestionnaires } from "@/lib/firestore/questionnaires";
 import { listQuestions } from "@/lib/firestore/questions";
 import { createSpecialistRequest } from "@/lib/firestore/requests";
-import type { Product, Questionnaire, QuestionnaireQuestion, WithId } from "@/lib/firestore/types";
+import { getRecommendationSettings } from "@/lib/firestore/settings";
+import type {
+  Product,
+  Questionnaire,
+  QuestionnaireQuestion,
+  QuestionnaireQuestionVisibilityRule,
+  WithId,
+} from "@/lib/firestore/types";
 import { listVocabularyOptions } from "@/lib/firestore/vocabulary";
 import { matchProductScenarios, type RecommendationInput } from "@/lib/recommendations/match";
+
+const isDebugEnabled =
+  process.env.NEXT_PUBLIC_DEBUG === "1" ||
+  process.env.NEXT_PUBLIC_DEBUG === "true" ||
+  process.env.NEXT_PUBLIC_DEBUG === "on";
 
 type VocabularyOption = { value: string; label: string };
 type VocabMap = Record<string, string>;
@@ -45,6 +57,7 @@ type HistorySession = {
   answers: AnswerMap;
   input: RecommendationInput;
   matchProductIds: string[];
+  askedQuestionIds?: string[];
 };
 
 const ANY_VALUE = "__any__";
@@ -57,7 +70,7 @@ const generateSessionId = () => {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 };
 
-const formatAnswerValue = (value: unknown) => {
+const _formatAnswerValue = (value: unknown) => {
   if (Array.isArray(value)) return value.map((item) => String(item)).join(", ");
   if (typeof value === "object" && value) {
     const range = value as RangeAnswer;
@@ -67,6 +80,29 @@ const formatAnswerValue = (value: unknown) => {
   }
   if (value === undefined || value === null) return "";
   return String(value);
+};
+
+const formatAnswerForQuestion = (value: unknown, question?: QuestionnaireQuestion) => {
+  const optionMap = question?.options ? Object.fromEntries(question.options.map((opt) => [opt.value, opt.label])) : {};
+  const toLabel = (val: unknown) => {
+    const key = String(val ?? "").trim();
+    if (!key) return "";
+    return optionMap[key] ?? key;
+  };
+  if (Array.isArray(value))
+    return value
+      .map((item) => toLabel(item))
+      .filter(Boolean)
+      .join(", ");
+  if (typeof value === "object" && value) {
+    const range = value as RangeAnswer;
+    if (range.min !== undefined || range.max !== undefined) {
+      return `min: ${range.min ?? "—"}, max: ${range.max ?? "—"}`;
+    }
+    return JSON.stringify(value);
+  }
+  if (value === undefined || value === null) return "";
+  return toLabel(value);
 };
 
 const buildImageGallery = (product: Product) => {
@@ -195,6 +231,25 @@ const isRequiredAnswered = (question: QuestionnaireQuestion, answer: unknown) =>
   return true;
 };
 
+const isRuleSatisfied = (
+  rule: QuestionnaireQuestionVisibilityRule,
+  answers: AnswerMap,
+  questionsById: Record<string, QuestionnaireQuestion>,
+) => {
+  const source = questionsById[rule.questionId];
+  if (!source || !rule.optionValues.length) return false;
+  const answer = answers[rule.questionId];
+  if (source.type === "single_select") {
+    const selected = asSingleChoice(answer);
+    return Boolean(selected && rule.optionValues.includes(selected));
+  }
+  if (source.type === "multi_select") {
+    const selected = asStringArray(answer);
+    return selected.some((value) => rule.optionValues.includes(value));
+  }
+  return false;
+};
+
 const formatTagValue = (map: VocabMap, value: string) => map[value] ?? value;
 
 export default function RecommendationTestPage() {
@@ -215,8 +270,10 @@ export default function RecommendationTestPage() {
   const [finalizedMatches, setFinalizedMatches] = useState<ReturnType<typeof matchProductScenarios>>([]);
   const [selectedMatch, setSelectedMatch] = useState<ReturnType<typeof matchProductScenarios>[0] | null>(null);
   const [sortMode, setSortMode] = useState<"fit" | "price">("fit");
+  const [minMatchPercent, setMinMatchPercent] = useState<number>(65);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [history, setHistory] = useState<HistorySession[]>([]);
+  const [isDebugOpen, setIsDebugOpen] = useState(false);
   const [pendingSession, setPendingSession] = useState<HistorySession | null>(null);
   const [completionId, setCompletionId] = useState<string | null>(null);
   const [completionError, setCompletionError] = useState<string | null>(null);
@@ -245,6 +302,12 @@ export default function RecommendationTestPage() {
     distance: {},
     priority: {},
   });
+
+  const questionsById = useMemo(
+    () =>
+      Object.fromEntries(questions.map((question) => [question.id, question])) as Record<string, QuestionnaireQuestion>,
+    [questions],
+  );
 
   const openProductUrl = useCallback(async (product: WithId<Product>) => {
     const fallbackUrl = product.productUrl;
@@ -276,9 +339,24 @@ export default function RecommendationTestPage() {
   }, []);
 
   const activeQuestionnaires = useMemo(() => questionnaires.filter((item) => item.active), [questionnaires]);
-  const orderedQuestions = useMemo(
-    () => questions.filter((item) => item.active).sort((a, b) => a.order - b.order),
-    [questions],
+  const orderedQuestions = useMemo(() => {
+    return questions
+      .filter((item) => item.active)
+      .sort((a, b) => a.order - b.order)
+      .filter((question) => {
+        const rules = question.visibilityRules ?? [];
+        if (!rules.length) return true;
+        return rules.every((rule) => isRuleSatisfied(rule, answers, questionsById));
+      });
+  }, [answers, questions, questionsById]);
+
+  const getAskedKeysFromIds = useCallback(
+    (ids?: string[]) => {
+      if (!ids?.length) return undefined;
+      const keys = ids.map((id) => questionsById[id]?.key).filter((key): key is string => Boolean(key));
+      return keys.length ? keys : undefined;
+    },
+    [questionsById],
   );
 
   const load = useCallback(async () => {
@@ -320,6 +398,18 @@ export default function RecommendationTestPage() {
   }, [load]);
 
   useEffect(() => {
+    getRecommendationSettings()
+      .then((settings) => {
+        if (settings?.minMatchPercent !== undefined) {
+          setMinMatchPercent(settings.minMatchPercent);
+        }
+      })
+      .catch((err) => {
+        logFirebaseError("RecommendationTest: loadSettings", err);
+      });
+  }, []);
+
+  useEffect(() => {
     if (!selectedQuestionnaireId) {
       setQuestions([]);
       setAnswers({});
@@ -337,7 +427,22 @@ export default function RecommendationTestPage() {
         if (pendingSession && pendingSession.questionnaireId === selectedQuestionnaireId) {
           setAnswers(pendingSession.answers);
           setFinalizedInput(pendingSession.input);
-          const nextMatches = matchProductScenarios({ products, input: pendingSession.input });
+          const itemsById = Object.fromEntries(items.map((question) => [question.id, question] as const)) as Record<
+            string,
+            QuestionnaireQuestion
+          >;
+          const askedKeys = pendingSession.askedQuestionIds
+            ? pendingSession.askedQuestionIds
+                .map((id) => itemsById[id]?.key)
+                .filter((key): key is string => Boolean(key))
+            : undefined;
+          const nextMatches = matchProductScenarios({
+            products,
+            input: pendingSession.input,
+            minMatchPercent,
+            askedKeys,
+            debug: isDebugEnabled,
+          });
           setFinalizedMatches(nextMatches);
           setActiveTab("results");
           setPendingSession(null);
@@ -357,11 +462,52 @@ export default function RecommendationTestPage() {
       .finally(() => {
         setIsLoadingQuestions(false);
       });
-  }, [selectedQuestionnaireId, products, pendingSession]);
+  }, [selectedQuestionnaireId, products, pendingSession, minMatchPercent]);
+
+  useEffect(() => {
+    if (orderedQuestions.length === 0) {
+      if (currentStep !== 0) setCurrentStep(0);
+      return;
+    }
+    if (currentStep > orderedQuestions.length - 1) {
+      setCurrentStep(orderedQuestions.length - 1);
+    }
+  }, [currentStep, orderedQuestions.length]);
 
   const updateAnswer = (questionId: string, value: unknown) => {
     setAnswers((prev) => ({ ...prev, [questionId]: value }));
   };
+
+  const isMissingAnswer = useCallback((value: unknown) => {
+    if (value === undefined || value === null) return true;
+    if (Array.isArray(value)) return value.length === 0;
+    if (typeof value === "string") return value.trim().length === 0;
+    if (typeof value === "object") {
+      const range = value as { min?: string; max?: string };
+      return !(range.min?.toString().trim() && range.max?.toString().trim());
+    }
+    return false;
+  }, []);
+
+  const computeSkippedQuestions = useCallback(() => {
+    const askedIds = new Set(orderedQuestions.map((question) => question.id));
+    return questions
+      .filter((question) => !askedIds.has(question.id))
+      .map((question) => {
+        const rules = question.visibilityRules ?? [];
+        if (!question.active) {
+          return { questionId: question.id, reason: "inactive" as const };
+        }
+        if (rules.length > 0 && !rules.every((rule) => isRuleSatisfied(rule, answers, questionsById))) {
+          const hasMissingPrereq = rules.some((rule) => isMissingAnswer(answers[rule.questionId]));
+          return {
+            questionId: question.id,
+            reason: hasMissingPrereq ? ("prerequisite_not_answered" as const) : ("rule_not_met" as const),
+          };
+        }
+        return { questionId: question.id, reason: "rule_not_met" as const };
+      });
+  }, [answers, isMissingAnswer, orderedQuestions, questions, questionsById]);
 
   const { input, preferences } = useMemo(
     () => buildRecommendationInput(orderedQuestions, answers),
@@ -369,11 +515,15 @@ export default function RecommendationTestPage() {
   );
 
   const matches = useMemo(() => {
+    const askedKeys = orderedQuestions.map((question) => question.key);
     return matchProductScenarios({
       products,
       input,
+      minMatchPercent,
+      askedKeys,
+      debug: isDebugEnabled,
     });
-  }, [products, input]);
+  }, [products, input, minMatchPercent, orderedQuestions]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -419,13 +569,15 @@ export default function RecommendationTestPage() {
           },
           answers: session.answers,
           matchProductIds: session.matchProductIds,
+          askedQuestionIds: session.askedQuestionIds,
+          skippedQuestions: computeSkippedQuestions(),
         });
         setCompletionId(ref.id);
       } catch (err) {
         logFirebaseError("RecommendationTest: createCompletion", err);
       }
     },
-    [authUser, completionContact.email, completionContact.name],
+    [authUser, completionContact.email, completionContact.name, computeSkippedQuestions],
   );
 
   const finalizeQuestionnaire = () => {
@@ -447,6 +599,7 @@ export default function RecommendationTestPage() {
       answers,
       input,
       matchProductIds: matches.map((match) => match.product.id),
+      askedQuestionIds: orderedQuestions.map((question) => question.id),
     };
     setHistory((prev) => [session, ...prev].slice(0, 20));
     setFinalizedInput(input);
@@ -488,11 +641,64 @@ export default function RecommendationTestPage() {
       return next;
     }
     next.sort((a, b) => {
+      if (a.matchPercent !== b.matchPercent) return b.matchPercent - a.matchPercent;
       if (a.fitScore !== b.fitScore) return b.fitScore - a.fitScore;
       return a.product.price - b.product.price;
     });
     return next;
   }, [finalizedMatches, matches, sortMode]);
+
+  const debugPayload = useMemo(() => {
+    if (!isDebugEnabled) return null;
+    const list = finalizedMatches.length ? finalizedMatches : matches;
+    if (!list.length) return null;
+    const askedQuestionIds = orderedQuestions.map((q) => q.id);
+    const askedKeys = orderedQuestions.map((q) => q.key);
+    return {
+      meta: {
+        minMatchPercent,
+        askedQuestionIds,
+        askedKeys,
+        orderedQuestionCount: orderedQuestions.length,
+        totalQuestionCount: questions.length,
+      },
+      input: finalizedInput ?? input,
+      answers,
+      skippedQuestions: computeSkippedQuestions(),
+      results: list.map((match) => ({
+        product: {
+          id: match.product.id,
+          name: match.product.name,
+          brand: match.product.brand,
+          price: match.product.price,
+          currency: match.product.currency,
+        },
+        scenario: match.scenario,
+        matchPercent: match.matchPercent,
+        fitScore: match.fitScore,
+        debug: match.debug ?? null,
+      })),
+    };
+  }, [
+    answers,
+    computeSkippedQuestions,
+    finalizedInput,
+    finalizedMatches,
+    input,
+    matches,
+    minMatchPercent,
+    orderedQuestions,
+    questions.length,
+  ]);
+
+  const debugJson = useMemo(() => {
+    if (!debugPayload) return "";
+    try {
+      return JSON.stringify(debugPayload, null, 2);
+    } catch {
+      return "Nu pot serializa debug payload.";
+    }
+  }, [debugPayload]);
 
   useEffect(() => {
     if (!finalizedInput) return;
@@ -501,7 +707,7 @@ export default function RecommendationTestPage() {
       const summary = orderedQuestions
         .map((question) => {
           const value = answers[question.id];
-          const formatted = formatAnswerValue(value);
+          const formatted = formatAnswerForQuestion(value, question);
           if (!formatted) return null;
           return `${question.label}: ${formatted}`;
         })
@@ -538,6 +744,8 @@ export default function RecommendationTestPage() {
           ...(email ? { email } : {}),
         },
         matchProductIds: finalizedMatches.map((match) => match.product.id),
+        askedQuestionIds: orderedQuestions.map((question) => question.id),
+        skippedQuestions: computeSkippedQuestions(),
         source: "recommendation_test",
       });
       if (completionId) {
@@ -578,7 +786,14 @@ export default function RecommendationTestPage() {
     }
     setAnswers(session.answers);
     setFinalizedInput(session.input);
-    const nextMatches = matchProductScenarios({ products, input: session.input });
+    const askedKeys = getAskedKeysFromIds(session.askedQuestionIds);
+    const nextMatches = matchProductScenarios({
+      products,
+      input: session.input,
+      minMatchPercent,
+      askedKeys,
+      debug: isDebugEnabled,
+    });
     setFinalizedMatches(nextMatches);
     setActiveTab("results");
   };
@@ -955,9 +1170,10 @@ export default function RecommendationTestPage() {
                         <div className="flex items-start justify-between gap-4">
                           <div className="flex-1 space-y-2">
                             <div className="flex items-start gap-3">
-                              <Badge variant="secondary" className="mt-0.5">
-                                #{idx + 1}
-                              </Badge>
+                              <div className="flex flex-col gap-2">
+                                <Badge variant="secondary">#{idx + 1}</Badge>
+                                <Badge variant="outline">Potrivire {match.matchPercent}%</Badge>
+                              </div>
                               {gallery.length ? (
                                 <button
                                   type="button"
@@ -1390,6 +1606,48 @@ export default function RecommendationTestPage() {
           ) : null}
         </DialogContent>
       </Dialog>
+
+      {isDebugEnabled ? (
+        <>
+          <Button
+            type="button"
+            variant="secondary"
+            className="fixed right-6 bottom-6 z-50 shadow-lg"
+            onClick={() => setIsDebugOpen(true)}
+            disabled={activeTab !== "results" || !debugPayload}
+          >
+            Debug
+          </Button>
+
+          <Dialog open={isDebugOpen} onOpenChange={setIsDebugOpen}>
+            <DialogContent className="!max-w-none flex h-[85vh] w-[95vw] flex-col gap-4">
+              <DialogHeader>
+                <DialogTitle>Debug recomandări</DialogTitle>
+              </DialogHeader>
+              <div className="min-h-0 flex-1 overflow-auto rounded-md border bg-muted p-3">
+                <pre className="whitespace-pre-wrap text-xs leading-relaxed">{debugJson || "Nimic de afișat."}</pre>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={async () => {
+                    try {
+                      if (!debugJson) return;
+                      await navigator.clipboard.writeText(debugJson);
+                    } catch {
+                      // ignore clipboard errors
+                    }
+                  }}
+                  disabled={!debugJson}
+                >
+                  Copiază JSON
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </>
+      ) : null}
     </div>
   );
 }

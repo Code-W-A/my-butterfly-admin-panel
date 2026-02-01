@@ -4,8 +4,10 @@ import {
   ClipboardList,
   FlaskConical,
   LayoutDashboard,
+  ListChecks,
   type LucideIcon,
   MessageSquare,
+  Settings,
   ShoppingBag,
 } from "lucide-react";
 
@@ -60,6 +62,11 @@ export const sidebarItems: NavGroup[] = [
         icon: ShoppingBag,
       },
       {
+        title: "Reguli recomandări",
+        url: "/dashboard/recommendation-rules",
+        icon: ListChecks,
+      },
+      {
         title: "Cereri",
         url: "/dashboard/requests",
         icon: MessageSquare,
@@ -68,6 +75,11 @@ export const sidebarItems: NavGroup[] = [
         title: "Vocabulary",
         url: "/dashboard/vocabulary",
         icon: BookOpen,
+      },
+      {
+        title: "Setări",
+        url: "/dashboard/settings",
+        icon: Settings,
       },
       {
         title: "Test recomandări",

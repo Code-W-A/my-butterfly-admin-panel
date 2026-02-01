@@ -1,6 +1,7 @@
 import {
   collection,
   collectionGroup,
+  deleteDoc,
   doc,
   getDocs,
   limit,
@@ -184,4 +185,11 @@ export async function setSpecialistRequestReply(
       sentAt: serverTimestamp(),
     },
   });
+}
+
+export async function deleteSpecialistRequest(userId: string, requestId: string) {
+  const { db } = initFirebase();
+  if (!db) throw new Error("Firestore not initialized.");
+  const ref = doc(db, "users", userId, "specialistRequests", requestId);
+  await deleteDoc(ref);
 }

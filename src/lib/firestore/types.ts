@@ -14,6 +14,11 @@ export type QuestionnaireQuestionOption = {
   active: boolean;
 };
 
+export type QuestionnaireQuestionVisibilityRule = {
+  questionId: string;
+  optionValues: string[];
+};
+
 export type QuestionnaireQuestion = {
   active: boolean;
   order: number;
@@ -22,6 +27,7 @@ export type QuestionnaireQuestion = {
   label: string;
   helpText?: string;
   options?: QuestionnaireQuestionOption[];
+  visibilityRules?: QuestionnaireQuestionVisibilityRule[];
   validation?: {
     required: boolean;
     min?: number;
@@ -65,6 +71,15 @@ export type ProductRecommendationScenario = {
   explanationTemplate: string;
 };
 
+export type RecommendationRuleSet = {
+  title: string;
+  scenario: ProductRecommendationScenario;
+  // legacy field from previous implementation
+  scenarios?: ProductRecommendationScenario[];
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+};
+
 export type UserProfile = {
   createdAt: Timestamp;
   lastSeenAt: Timestamp;
@@ -91,6 +106,8 @@ export type SpecialistRequest = {
   note?: string;
   contact?: SpecialistRequestContact;
   matchProductIds?: string[];
+  askedQuestionIds?: string[];
+  skippedQuestions?: QuestionnaireCompletionSkipped[];
   source?: "recommendation_test";
   reply?: SpecialistRequestReply;
 };
@@ -107,6 +124,11 @@ export type QuestionnaireCompletionContact = {
   phone?: string;
 };
 
+export type QuestionnaireCompletionSkipped = {
+  questionId: string;
+  reason: "rule_not_met" | "inactive" | "prerequisite_not_answered";
+};
+
 export type QuestionnaireCompletion = {
   createdAt: Timestamp;
   questionnaireId: string;
@@ -115,6 +137,8 @@ export type QuestionnaireCompletion = {
   contact: QuestionnaireCompletionContact;
   answers: Record<string, unknown>;
   matchProductIds?: string[];
+  askedQuestionIds?: string[];
+  skippedQuestions?: QuestionnaireCompletionSkipped[];
   specialistRequestId?: string;
 };
 

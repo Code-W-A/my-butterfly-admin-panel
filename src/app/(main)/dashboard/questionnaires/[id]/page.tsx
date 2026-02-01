@@ -10,14 +10,16 @@ import { z } from "zod";
 
 import { PageHelpDialog } from "@/components/mybutterfly/help/page-help-dialog";
 import { QuestionEditor } from "@/components/mybutterfly/questionnaires/question-editor";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SortableTableHead, type SortState } from "@/components/ui/sortable-table-head";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { getQuestionnaire, updateQuestionnaire } from "@/lib/firestore/questionnaires";
+import { deleteQuestionnaire, getQuestionnaire, updateQuestionnaire } from "@/lib/firestore/questionnaires";
 import { listQuestions } from "@/lib/firestore/questions";
 import type { Questionnaire, QuestionnaireQuestion, WithId } from "@/lib/firestore/types";
 
@@ -45,8 +47,26 @@ export default function QuestionnaireDetailPage() {
   const questionnaireId = params.id as string;
   const [questionnaire, setQuestionnaire] = useState<WithId<Questionnaire> | null>(null);
   const [questions, setQuestions] = useState<WithId<QuestionnaireQuestion>[]>([]);
+  const [sort, setSort] = useState<SortState<"order" | "key" | "type" | "label" | "active">>({
+    key: "order",
+    dir: "asc",
+  });
+  const sortedQuestions = useMemo(() => {
+    const next = [...questions];
+    const dir = sort?.dir === "desc" ? -1 : 1;
+    next.sort((a, b) => {
+      if (!sort) return 0;
+      if (sort.key === "order") return dir * ((a.order ?? 0) - (b.order ?? 0));
+      if (sort.key === "key") return dir * (a.key ?? "").localeCompare(b.key ?? "");
+      if (sort.key === "type") return dir * formatQuestionType(a.type).localeCompare(formatQuestionType(b.type));
+      if (sort.key === "label") return dir * (a.label ?? "").localeCompare(b.label ?? "");
+      return dir * (Number(a.active) - Number(b.active));
+    });
+    return next;
+  }, [questions, sort]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const form = useForm<z.infer<typeof FormSchema>>({
     resolver: zodResolver(FormSchema),
@@ -91,6 +111,18 @@ export default function QuestionnaireDetailPage() {
     await load();
   };
 
+  const handleDeleteQuestionnaire = async () => {
+    if (!questionnaire) return;
+    if (!window.confirm(`Ștergi chestionarul "${questionnaire.title}"?`)) return;
+    try {
+      setIsDeleting(true);
+      await deleteQuestionnaire(questionnaireId);
+      router.push("/dashboard/questionnaires");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   if (!questionnaire) {
     return (
       <div className="space-y-4">
@@ -111,6 +143,9 @@ export default function QuestionnaireDetailPage() {
         </div>
         <div className="flex items-center gap-2">
           <PageHelpDialog helpKey="questionnaires.edit" />
+          <Button variant="destructive" onClick={handleDeleteQuestionnaire} disabled={isDeleting}>
+            {isDeleting ? "Se șterge..." : "Șterge chestionar"}
+          </Button>
           <Button variant="outline" onClick={() => router.push("/dashboard/questionnaires")}>
             Înapoi la listă
           </Button>
@@ -171,11 +206,21 @@ export default function QuestionnaireDetailPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Ordine</TableHead>
-                <TableHead>Cheie</TableHead>
-                <TableHead>Tip</TableHead>
-                <TableHead>Text întrebare</TableHead>
-                <TableHead>Activ</TableHead>
+                <SortableTableHead sortKey="order" sort={sort} onSortChange={setSort}>
+                  Ordine
+                </SortableTableHead>
+                <SortableTableHead sortKey="key" sort={sort} onSortChange={setSort}>
+                  Cheie
+                </SortableTableHead>
+                <SortableTableHead sortKey="type" sort={sort} onSortChange={setSort}>
+                  Tip
+                </SortableTableHead>
+                <SortableTableHead sortKey="label" sort={sort} onSortChange={setSort}>
+                  Text întrebare
+                </SortableTableHead>
+                <SortableTableHead sortKey="active" sort={sort} onSortChange={setSort}>
+                  Activ
+                </SortableTableHead>
                 <TableHead className="text-right">Acțiuni</TableHead>
               </TableRow>
             </TableHeader>
@@ -187,12 +232,17 @@ export default function QuestionnaireDetailPage() {
                   </TableCell>
                 </TableRow>
               ) : (
-                questions.map((question) => (
+                sortedQuestions.map((question) => (
                   <TableRow key={question.id}>
                     <TableCell>{question.order}</TableCell>
                     <TableCell>{question.key}</TableCell>
                     <TableCell>{formatQuestionType(question.type)}</TableCell>
-                    <TableCell>{question.label}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <span>{question.label}</span>
+                        {question.visibilityRules?.length ? <Badge variant="outline">Condiționată</Badge> : null}
+                      </div>
+                    </TableCell>
                     <TableCell>{question.active ? "Da" : "Nu"}</TableCell>
                     <TableCell className="text-right">
                       <Button
@@ -228,6 +278,7 @@ export default function QuestionnaireDetailPage() {
           <QuestionEditor
             questionnaireId={questionnaireId}
             selected={selectedQuestion}
+            availableQuestions={questions}
             defaultOrder={nextQuestionOrder}
             onSaved={async () => {
               await load();

@@ -10,6 +10,7 @@ import { useFieldArray, useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { InfoTip } from "@/components/ui/info-tip";
@@ -20,7 +21,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { logFirebaseError } from "@/lib/firebase/error-utils.client";
 import { createQuestion, deleteQuestion, listAllQuestionOptionValues, updateQuestion } from "@/lib/firestore/questions";
-import type { QuestionnaireQuestion, WithId } from "@/lib/firestore/types";
+import type { QuestionnaireQuestion, QuestionnaireQuestionVisibilityRule, WithId } from "@/lib/firestore/types";
 import { listVocabularyKeys, listVocabularyOptions, type VocabularyCategory } from "@/lib/firestore/vocabulary";
 
 const questionSchema = z.object({
@@ -45,6 +46,14 @@ const questionSchema = z.object({
     min: z.coerce.number().optional(),
     max: z.coerce.number().optional(),
   }),
+  visibilityRules: z
+    .array(
+      z.object({
+        questionId: z.string().min(1),
+        optionValues: z.array(z.string().min(1)).min(1),
+      }),
+    )
+    .optional(),
 });
 
 type QuestionFormValues = z.infer<typeof questionSchema>;
@@ -64,6 +73,7 @@ const defaultValues: QuestionFormValues = {
     min: undefined,
     max: undefined,
   },
+  visibilityRules: [],
 };
 
 const questionTypeOptions: Array<{ value: QuestionFormValues["type"]; label: string }> = [
@@ -141,6 +151,7 @@ const generateUniqueValue = (label: string, existing: Set<string>) => {
 type QuestionEditorProps = {
   questionnaireId: string;
   selected: WithId<QuestionnaireQuestion> | null;
+  availableQuestions: WithId<QuestionnaireQuestion>[];
   defaultOrder?: number;
   onSaved: () => void;
   onCancelEdit: () => void;
@@ -149,6 +160,7 @@ type QuestionEditorProps = {
 export function QuestionEditor({
   questionnaireId,
   selected,
+  availableQuestions,
   defaultOrder,
   onSaved,
   onCancelEdit,
@@ -163,11 +175,20 @@ export function QuestionEditor({
     control: form.control,
     name: "options",
   });
+  const {
+    fields: ruleFields,
+    append: appendRule,
+    remove: removeRule,
+  } = useFieldArray({
+    control: form.control,
+    name: "visibilityRules",
+  });
 
   const typeValue = form.watch("type");
   const requiresOptions = typeValue === "single_select" || typeValue === "multi_select";
   const isRangeType = typeValue === "range";
   const keyValue = form.watch("key");
+  const rulesValue = form.watch("visibilityRules") ?? [];
   const [vocabularyCategories, setVocabularyCategories] = useState<WithId<VocabularyCategory>[]>([]);
   const vocabularyKeyValues = useMemo(() => vocabularyCategories.map((item) => item.key), [vocabularyCategories]);
   const vocabularyKeyOptions = useMemo<VocabularyKeyOption[]>(
@@ -217,6 +238,23 @@ export function QuestionEditor({
   const skipImportPromptRef = useRef(true);
   const userChangedKeyRef = useRef(false);
   const keySelectOpenedByUserRef = useRef(false);
+
+  const conditionQuestions = useMemo(
+    () =>
+      availableQuestions.filter(
+        (q) => q.id !== selected?.id && (q.type === "single_select" || q.type === "multi_select"),
+      ),
+    [availableQuestions, selected?.id],
+  );
+
+  const getQuestionOptions = useCallback(
+    (questionId: string) => {
+      const question = conditionQuestions.find((q) => q.id === questionId);
+      if (!question?.options?.length) return [];
+      return question.options.filter((opt) => opt.active);
+    },
+    [conditionQuestions],
+  );
 
   useEffect(() => {
     listVocabularyKeys({ includeInactive: true })
@@ -283,6 +321,7 @@ export function QuestionEditor({
           min: selected.validation?.min,
           max: selected.validation?.max,
         },
+        visibilityRules: selected.visibilityRules ?? [],
       });
       // #region agent log
       fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
@@ -464,6 +503,28 @@ export function QuestionEditor({
   }, [isVocabularyKey, keyValue, options.length, replace]);
 
   useEffect(() => {
+    if (!keyValue) return;
+    const currentLabel = form.getValues("label")?.trim() ?? "";
+    const prevKey = prevKeyRef.current;
+    const prevCategory = prevKey
+      ? vocabularyCategories.find((category) => category.key === String(prevKey))
+      : undefined;
+    const prevStandard = prevCategory?.standardQuestion?.trim();
+    const prevBudget = prevKey === "budget" ? "Care este bugetul tău?" : undefined;
+
+    const currentCategory = vocabularyCategories.find((category) => category.key === String(keyValue));
+    const standardQuestion = currentCategory?.standardQuestion?.trim();
+    const fallbackStandard = keyValue === "budget" ? "Care este bugetul tău?" : undefined;
+    const nextStandard = standardQuestion ?? fallbackStandard;
+    if (!nextStandard) return;
+
+    const shouldReplace =
+      !currentLabel || (prevStandard && currentLabel === prevStandard) || (prevBudget && currentLabel === prevBudget);
+    if (!shouldReplace) return;
+    form.setValue("label", nextStandard, { shouldDirty: true, shouldTouch: true });
+  }, [form, keyValue, vocabularyCategories]);
+
+  useEffect(() => {
     prevKeyRef.current = keyValue;
     skipImportPromptRef.current = false;
     userChangedKeyRef.current = false;
@@ -590,10 +651,14 @@ export function QuestionEditor({
       const updatePayload: Record<string, unknown> = {
         ...basePayload,
         ...(requiresOptions ? { options: resolvedOptions } : { options: deleteField() }),
+        visibilityRules: values.visibilityRules?.length ? values.visibilityRules : deleteField(),
       };
       await updateQuestion(questionnaireId, selected.id, updatePayload);
     } else {
       const createPayload = requiresOptions ? { ...basePayload, options: resolvedOptions } : basePayload;
+      if (values.visibilityRules?.length) {
+        createPayload.visibilityRules = values.visibilityRules;
+      }
       await createQuestion(questionnaireId, createPayload);
     }
     onSaved();
@@ -985,6 +1050,107 @@ export function QuestionEditor({
               )}
             </div>
           ) : null}
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="flex items-center gap-2 font-medium">
+                <InfoTip text="Definește când această întrebare trebuie să apară, în funcție de răspunsurile anterioare." />
+                Se afișează dacă
+              </h4>
+              <Button type="button" variant="outline" onClick={() => appendRule({ questionId: "", optionValues: [] })}>
+                Adaugă condiție
+              </Button>
+            </div>
+            {ruleFields.length === 0 ? (
+              <div className="text-muted-foreground text-xs">Întrebarea apare mereu (fără condiții).</div>
+            ) : (
+              <div className="space-y-3">
+                {ruleFields.map((field, index) => {
+                  const currentRule = rulesValue[index] as QuestionnaireQuestionVisibilityRule | undefined;
+                  const selectedQuestionId = currentRule?.questionId ?? "";
+                  const availableOptions = selectedQuestionId ? getQuestionOptions(selectedQuestionId) : [];
+                  return (
+                    <div key={field.id} className="rounded-md border p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="space-y-1">
+                          <FormLabel className="flex items-center gap-2">
+                            <InfoTip text="Selectează întrebarea de care depinde afișarea." />
+                            Întrebarea
+                          </FormLabel>
+                          <Select
+                            value={selectedQuestionId}
+                            onValueChange={(value) => {
+                              form.setValue(`visibilityRules.${index}.questionId`, value, { shouldDirty: true });
+                              form.setValue(`visibilityRules.${index}.optionValues`, [], { shouldDirty: true });
+                            }}
+                          >
+                            <SelectTrigger className="w-72">
+                              <SelectValue placeholder="Alege întrebarea" />
+                            </SelectTrigger>
+                            <SelectContent className="max-w-sm">
+                              {conditionQuestions.map((q) => (
+                                <SelectItem key={q.id} value={q.id}>
+                                  {q.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <Button type="button" variant="outline" size="sm" onClick={() => removeRule(index)}>
+                          Elimină
+                        </Button>
+                      </div>
+                      <div className="mt-3 space-y-2">
+                        <div className="text-muted-foreground text-xs">
+                          Întrebarea se afișează dacă răspunsul ales este una dintre valorile de mai jos.
+                        </div>
+                        {selectedQuestionId ? (
+                          availableOptions.length ? (
+                            <div className="grid gap-2 md:grid-cols-2">
+                              {availableOptions.map((option) => {
+                                const checked = currentRule?.optionValues?.includes(option.value) ?? false;
+                                const toggle = () => {
+                                  const current = currentRule?.optionValues ?? [];
+                                  const next = checked
+                                    ? current.filter((v) => v !== option.value)
+                                    : [...current, option.value];
+                                  form.setValue(`visibilityRules.${index}.optionValues`, next, { shouldDirty: true });
+                                };
+                                return (
+                                  <button
+                                    key={option.value}
+                                    type="button"
+                                    className="flex items-center gap-2 text-sm"
+                                    onClick={toggle}
+                                  >
+                                    <Checkbox
+                                      checked={checked}
+                                      onCheckedChange={() => {
+                                        /* handled by row click */
+                                      }}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        toggle();
+                                      }}
+                                    />
+                                    <span>{option.label}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <div className="text-muted-foreground text-xs">Nu există opțiuni active.</div>
+                          )
+                        ) : (
+                          <div className="text-muted-foreground text-xs">Alege mai întâi o întrebare.</div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
           <Button type="submit" data-tour="questionnaire-add-question">
             {selected ? "Actualizează întrebarea" : "Adaugă întrebarea"}

@@ -80,6 +80,26 @@ export async function listProductsPage(params: {
   return { items, cursor: nextCursor };
 }
 
+export async function listProductsByPrestashopIds(ids: string[]): Promise<WithId<Product>[]> {
+  const { db } = initFirebase();
+  if (!db || ids.length === 0) return [];
+  const productsCollection = collection(db, "products");
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += 10) {
+    chunks.push(ids.slice(i, i + 10));
+  }
+  const results: WithId<Product>[] = [];
+  for (const chunk of chunks) {
+    const snapshot = await getDocs(query(productsCollection, where("source.prestashopProductId", "in", chunk)));
+    snapshot.docs.forEach((docSnap) => {
+      const item = { id: docSnap.id, ...(docSnap.data() as Product) };
+      results.push(item);
+      cache.products.set(item);
+    });
+  }
+  return results;
+}
+
 export async function getProductsByIds(ids: string[]): Promise<WithId<Product>[]> {
   const { db } = initFirebase();
   if (!db) return [];

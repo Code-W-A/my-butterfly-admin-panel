@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+import { buildPrestashopPublicImageUrl } from "@/lib/prestashop/images";
+
 export const dynamic = "force-dynamic";
 
 const getEnv = () => {
@@ -72,6 +74,24 @@ const toNumber = (value: unknown) => {
   return 0;
 };
 
+const toImageId = (value: unknown) => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  if (typeof value === "object" && value) {
+    const anyValue = value as Record<string, unknown>;
+    const nested = anyValue.id ?? anyValue.value ?? anyValue.id_default_image;
+    if (typeof nested === "number" && Number.isFinite(nested)) return nested;
+    if (typeof nested === "string") {
+      const parsed = Number(nested);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+  }
+  return 0;
+};
+
 const sanitizeQuery = (value: string) => value.replace(/[%[\]|,]/g, "");
 
 export async function GET(request: Request) {
@@ -90,7 +110,7 @@ export async function GET(request: Request) {
 
     const url = new URL(`${baseUrl}/api/products`);
     url.searchParams.set("output_format", "JSON");
-    url.searchParams.set("display", "[id,name,reference,price]");
+    url.searchParams.set("display", "[id,name,reference,price,id_default_image]");
     url.searchParams.set("filter[name]", `%[${sanitizedQuery}]%`);
     url.searchParams.set("limit", `0,${limit}`);
     url.searchParams.set("sort", "[id_DESC]");
@@ -112,12 +132,17 @@ export async function GET(request: Request) {
       products?: Array<Record<string, unknown>>;
     };
 
-    const items = (data.products ?? []).map((product) => ({
-      id: String(product.id ?? ""),
-      name: normalizeName(product.name, langId),
-      reference: String(product.reference ?? ""),
-      price: toNumber(product.price),
-    }));
+    const items = (data.products ?? []).map((product) => {
+      const imageId = toImageId(product.id_default_image);
+      return {
+        id: String(product.id ?? ""),
+        name: normalizeName(product.name, langId),
+        reference: String(product.reference ?? ""),
+        price: toNumber(product.price),
+        imageUrl: imageId ? buildPrestashopPublicImageUrl(imageId) : undefined,
+        imageId: imageId || undefined,
+      };
+    });
 
     return NextResponse.json({ items });
   } catch (error) {

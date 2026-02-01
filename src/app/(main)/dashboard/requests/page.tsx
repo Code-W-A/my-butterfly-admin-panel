@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import Link from "next/link";
 
@@ -8,10 +8,11 @@ import { PageHelpDialog } from "@/components/mybutterfly/help/page-help-dialog";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SortableTableHead, type SortState } from "@/components/ui/sortable-table-head";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
 import { getQuestionnaire, listQuestionnaires } from "@/lib/firestore/questionnaires";
-import { listSpecialistRequestsPage } from "@/lib/firestore/requests";
+import { deleteSpecialistRequest, listSpecialistRequestsPage } from "@/lib/firestore/requests";
 import type { Questionnaire, SpecialistRequest, WithId } from "@/lib/firestore/types";
 
 type RequestItem = WithId<SpecialistRequest> & { userId: string };
@@ -36,6 +37,34 @@ export default function RequestsPage() {
   const [cursor, setCursor] = useState<unknown | undefined>(undefined);
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState<string | null>(null);
+  const [sort, setSort] = useState<SortState<"createdAt" | "status" | "questionnaire" | "name" | "phone" | "email">>({
+    key: "createdAt",
+    dir: "desc",
+  });
+
+  const sortedItems = useMemo(() => {
+    const next = [...items];
+    const dir = sort?.dir === "desc" ? -1 : 1;
+    next.sort((a, b) => {
+      if (!sort) return 0;
+      if (sort.key === "createdAt") {
+        const aTime = a.createdAt ? a.createdAt.toMillis() : 0;
+        const bTime = b.createdAt ? b.createdAt.toMillis() : 0;
+        return dir * (aTime - bTime);
+      }
+      if (sort.key === "status") return dir * formatStatus(a.status).localeCompare(formatStatus(b.status));
+      if (sort.key === "questionnaire")
+        return (
+          dir *
+          (questionnaireTitles[a.questionnaireId] ?? "").localeCompare(questionnaireTitles[b.questionnaireId] ?? "")
+        );
+      if (sort.key === "name") return dir * (a.contact?.name ?? "").localeCompare(b.contact?.name ?? "");
+      if (sort.key === "phone") return dir * (a.contact?.phone ?? "").localeCompare(b.contact?.phone ?? "");
+      return dir * (a.contact?.email ?? "").localeCompare(b.contact?.email ?? "");
+    });
+    return next;
+  }, [items, questionnaireTitles, sort]);
 
   useEffect(() => {
     const loadFirstPage = async () => {
@@ -126,6 +155,21 @@ export default function RequestsPage() {
       });
   }, [items, questionnaireTitles]);
 
+  const handleDelete = async (item: RequestItem) => {
+    if (!window.confirm("Ștergi cererea?")) return;
+    try {
+      setIsDeleting(item.id);
+      await deleteSpecialistRequest(item.userId, item.id);
+      setItems((prev) => prev.filter((entry) => entry.id !== item.id));
+    } catch (err) {
+      logFirebaseError("Requests: delete", err);
+      const info = getFirebaseErrorInfo(err);
+      setError(`${info.code ? `Cod: ${info.code}. ` : ""}${info.message}`);
+    } finally {
+      setIsDeleting(null);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {error ? (
@@ -166,13 +210,25 @@ export default function RequestsPage() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Creat</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Chestionar</TableHead>
-              <TableHead>Nume</TableHead>
-              <TableHead>Telefon</TableHead>
-              <TableHead>Email</TableHead>
-              <TableHead className="text-right">Detalii</TableHead>
+              <SortableTableHead sortKey="createdAt" sort={sort} onSortChange={setSort}>
+                Creat
+              </SortableTableHead>
+              <SortableTableHead sortKey="status" sort={sort} onSortChange={setSort}>
+                Status
+              </SortableTableHead>
+              <SortableTableHead sortKey="questionnaire" sort={sort} onSortChange={setSort}>
+                Chestionar
+              </SortableTableHead>
+              <SortableTableHead sortKey="name" sort={sort} onSortChange={setSort}>
+                Nume
+              </SortableTableHead>
+              <SortableTableHead sortKey="phone" sort={sort} onSortChange={setSort}>
+                Telefon
+              </SortableTableHead>
+              <SortableTableHead sortKey="email" sort={sort} onSortChange={setSort}>
+                Email
+              </SortableTableHead>
+              <TableHead className="text-right">Acțiuni</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -187,7 +243,7 @@ export default function RequestsPage() {
                       <Skeleton className="h-4 w-28" />
                       <Skeleton className="h-4 w-28" />
                       <Skeleton className="h-4 w-28" />
-                      <Skeleton className="h-4 w-16 justify-self-end" />
+                      <Skeleton className="h-8 w-24 justify-self-end" />
                     </div>
                   </TableCell>
                 </TableRow>
@@ -199,7 +255,7 @@ export default function RequestsPage() {
                 </TableCell>
               </TableRow>
             ) : (
-              items.map((item) => (
+              sortedItems.map((item) => (
                 <TableRow key={`${item.userId}-${item.id}`}>
                   <TableCell>{item.createdAt ? item.createdAt.toDate().toLocaleString() : "—"}</TableCell>
                   <TableCell className="capitalize">{formatStatus(item.status)}</TableCell>
@@ -210,12 +266,20 @@ export default function RequestsPage() {
                   <TableCell className="text-muted-foreground text-sm">{item.contact?.phone ?? "—"}</TableCell>
                   <TableCell className="text-muted-foreground text-sm">{item.contact?.email ?? "—"}</TableCell>
                   <TableCell className="text-right">
-                    <Link
-                      className="text-primary underline-offset-4 hover:underline"
-                      href={`/dashboard/requests/${item.id}`}
-                    >
-                      Vezi
-                    </Link>
+                    <div className="flex items-center justify-end gap-2">
+                      <Button asChild type="button" variant="outline" size="sm">
+                        <Link href={`/dashboard/requests/${item.id}`}>Vezi</Link>
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => handleDelete(item)}
+                        disabled={isDeleting === item.id}
+                      >
+                        {isDeleting === item.id ? "Se șterge..." : "Șterge"}
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))

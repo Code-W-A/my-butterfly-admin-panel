@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import Link from "next/link";
 
 import { PageHelpDialog } from "@/components/mybutterfly/help/page-help-dialog";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SortableTableHead, type SortState } from "@/components/ui/sortable-table-head";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
@@ -21,6 +22,21 @@ export default function QuestionnairesPage() {
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
+  const [sort, setSort] = useState<SortState<"title" | "active" | "updatedAt">>({ key: "updatedAt", dir: "desc" });
+
+  const sortedItems = useMemo(() => {
+    const next = [...items];
+    const dir = sort?.dir === "desc" ? -1 : 1;
+    next.sort((a, b) => {
+      if (!sort) return 0;
+      if (sort.key === "title") return dir * a.title.localeCompare(b.title);
+      if (sort.key === "active") return dir * (Number(a.active) - Number(b.active));
+      const aTime = a.updatedAt ? a.updatedAt.toMillis() : 0;
+      const bTime = b.updatedAt ? b.updatedAt.toMillis() : 0;
+      return dir * (aTime - bTime);
+    });
+    return next;
+  }, [items, sort]);
 
   const loadFirstPage = useCallback(async () => {
     try {
@@ -116,16 +132,22 @@ export default function QuestionnairesPage() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Titlu</TableHead>
-              <TableHead>Activ</TableHead>
-              <TableHead>Actualizat</TableHead>
+              <SortableTableHead sortKey="title" sort={sort} onSortChange={setSort}>
+                Titlu
+              </SortableTableHead>
+              <SortableTableHead sortKey="active" sort={sort} onSortChange={setSort}>
+                Activ
+              </SortableTableHead>
+              <SortableTableHead sortKey="updatedAt" sort={sort} onSortChange={setSort}>
+                Actualizat
+              </SortableTableHead>
               <TableHead className="text-right">Acțiuni</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
-              Array.from({ length: 6 }).map((_, index) => (
-                <TableRow key={`skeleton-${index}`}>
+              ["s1", "s2", "s3", "s4", "s5", "s6"].map((rowId) => (
+                <TableRow key={rowId}>
                   <TableCell colSpan={4}>
                     <div className="grid gap-3 md:grid-cols-4">
                       <Skeleton className="h-4 w-48" />
@@ -143,7 +165,7 @@ export default function QuestionnairesPage() {
                 </TableCell>
               </TableRow>
             ) : (
-              items.map((item) => (
+              sortedItems.map((item) => (
                 <TableRow key={item.id}>
                   <TableCell className="font-medium">{item.title}</TableCell>
                   <TableCell>

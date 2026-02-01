@@ -11,9 +11,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SortableTableHead, type SortState } from "@/components/ui/sortable-table-head";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
-import { listQuestionnaireCompletionsPage } from "@/lib/firestore/completions";
+import { deleteQuestionnaireCompletion, listQuestionnaireCompletionsPage } from "@/lib/firestore/completions";
 import { listQuestionnaires } from "@/lib/firestore/questionnaires";
 import type { Questionnaire, QuestionnaireCompletion, WithId } from "@/lib/firestore/types";
 
@@ -35,6 +36,10 @@ export default function QuestionnaireCompletionsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState<string | null>(null);
+  const [sort, setSort] = useState<
+    SortState<"createdAt" | "questionnaire" | "name" | "email" | "user" | "hasRequest" | "productsCount">
+  >({ key: "createdAt", dir: "desc" });
 
   const appliedSince = useMemo(() => {
     if (!appliedRange.from) return undefined;
@@ -121,16 +126,57 @@ export default function QuestionnaireCompletionsPage() {
     }
   };
 
-  const questionnaireTitle = (item: CompletionItem) =>
-    item.questionnaireTitle?.trim() ||
-    questionnaires.find((q) => q.id === item.questionnaireId)?.title ||
-    item.questionnaireId ||
-    "—";
+  const questionnaireTitle = useMemo(() => {
+    const byId = new Map(questionnaires.map((q) => [q.id, q.title] as const));
+    return (item: CompletionItem) =>
+      item.questionnaireTitle?.trim() || byId.get(item.questionnaireId) || item.questionnaireId || "—";
+  }, [questionnaires]);
+
+  const sortedItems = useMemo(() => {
+    const next = [...items];
+    const dir = sort?.dir === "desc" ? -1 : 1;
+    next.sort((a, b) => {
+      if (!sort) return 0;
+      if (sort.key === "createdAt") {
+        const aTime = a.createdAt ? a.createdAt.toMillis() : 0;
+        const bTime = b.createdAt ? b.createdAt.toMillis() : 0;
+        return dir * (aTime - bTime);
+      }
+      if (sort.key === "questionnaire") return dir * questionnaireTitle(a).localeCompare(questionnaireTitle(b));
+      if (sort.key === "name") return dir * (a.contact?.name ?? "").localeCompare(b.contact?.name ?? "");
+      if (sort.key === "email") return dir * (a.contact?.email ?? "").localeCompare(b.contact?.email ?? "");
+      if (sort.key === "user") {
+        const aUser = a.user?.isAnonymous ? "Anonim" : (a.user?.email ?? a.contact?.name ?? "Autentificat");
+        const bUser = b.user?.isAnonymous ? "Anonim" : (b.user?.email ?? b.contact?.name ?? "Autentificat");
+        return dir * aUser.localeCompare(bUser);
+      }
+      if (sort.key === "hasRequest") {
+        return dir * (Number(Boolean(a.specialistRequestId)) - Number(Boolean(b.specialistRequestId)));
+      }
+      return dir * ((a.matchProductIds?.length ?? 0) - (b.matchProductIds?.length ?? 0));
+    });
+    return next;
+  }, [items, sort, questionnaireTitle]);
 
   const handleClearFilters = () => {
     setQuestionnaireId("all");
     setDateRange({});
     setAppliedRange({});
+  };
+
+  const handleDelete = async (item: CompletionItem) => {
+    if (!window.confirm(`Ștergi completarea pentru "${questionnaireTitle(item)}"?`)) return;
+    try {
+      setIsDeleting(item.id);
+      await deleteQuestionnaireCompletion(item.id);
+      setItems((prev) => prev.filter((entry) => entry.id !== item.id));
+    } catch (err) {
+      logFirebaseError("Completions: delete", err);
+      const info = getFirebaseErrorInfo(err);
+      setError(`${info.code ? `Cod: ${info.code}. ` : ""}${info.message}`);
+    } finally {
+      setIsDeleting(null);
+    }
   };
 
   return (
@@ -216,14 +262,28 @@ export default function QuestionnaireCompletionsPage() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Creat</TableHead>
-              <TableHead>Chestionar</TableHead>
-              <TableHead>Nume</TableHead>
-              <TableHead>Email</TableHead>
-              <TableHead>Utilizator</TableHead>
-              <TableHead>Cerere specialist</TableHead>
-              <TableHead>Produse recomandate</TableHead>
-              <TableHead className="text-right">Detalii</TableHead>
+              <SortableTableHead sortKey="createdAt" sort={sort} onSortChange={setSort}>
+                Creat
+              </SortableTableHead>
+              <SortableTableHead sortKey="questionnaire" sort={sort} onSortChange={setSort}>
+                Chestionar
+              </SortableTableHead>
+              <SortableTableHead sortKey="name" sort={sort} onSortChange={setSort}>
+                Nume
+              </SortableTableHead>
+              <SortableTableHead sortKey="email" sort={sort} onSortChange={setSort}>
+                Email
+              </SortableTableHead>
+              <SortableTableHead sortKey="user" sort={sort} onSortChange={setSort}>
+                Utilizator
+              </SortableTableHead>
+              <SortableTableHead sortKey="hasRequest" sort={sort} onSortChange={setSort}>
+                Cerere specialist
+              </SortableTableHead>
+              <SortableTableHead sortKey="productsCount" sort={sort} onSortChange={setSort}>
+                Produse recomandate
+              </SortableTableHead>
+              <TableHead className="text-right">Acțiuni</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -239,7 +299,7 @@ export default function QuestionnaireCompletionsPage() {
                       <Skeleton className="h-4 w-24" />
                       <Skeleton className="h-4 w-24" />
                       <Skeleton className="h-4 w-24" />
-                      <Skeleton className="h-4 w-16 justify-self-end" />
+                      <Skeleton className="h-8 w-24 justify-self-end" />
                     </div>
                   </TableCell>
                 </TableRow>
@@ -251,7 +311,7 @@ export default function QuestionnaireCompletionsPage() {
                 </TableCell>
               </TableRow>
             ) : (
-              items.map((item) => (
+              sortedItems.map((item) => (
                 <TableRow key={item.id}>
                   <TableCell>{item.createdAt ? item.createdAt.toDate().toLocaleString() : "—"}</TableCell>
                   <TableCell className="max-w-[16rem] truncate">{questionnaireTitle(item)}</TableCell>
@@ -263,12 +323,20 @@ export default function QuestionnaireCompletionsPage() {
                   <TableCell>{item.specialistRequestId ? "Da" : "—"}</TableCell>
                   <TableCell>{item.matchProductIds?.length ?? 0}</TableCell>
                   <TableCell className="text-right">
-                    <Link
-                      className="text-primary underline-offset-4 hover:underline"
-                      href={`/dashboard/questionnaire-completions/${item.id}`}
-                    >
-                      Vezi
-                    </Link>
+                    <div className="flex items-center justify-end gap-2">
+                      <Button asChild type="button" variant="outline" size="sm">
+                        <Link href={`/dashboard/questionnaire-completions/${item.id}`}>Vezi</Link>
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => handleDelete(item)}
+                        disabled={isDeleting === item.id}
+                      >
+                        {isDeleting === item.id ? "Se șterge..." : "Șterge"}
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))

@@ -14,8 +14,9 @@ import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-uti
 import { getQuestionnaireCompletionById, setQuestionnaireCompletionMatchProductIds } from "@/lib/firestore/completions";
 import { getProductsByIds, listProducts } from "@/lib/firestore/products";
 import { listQuestions } from "@/lib/firestore/questions";
+import { getRecommendationSettings } from "@/lib/firestore/settings";
 import type { Product, QuestionnaireCompletion, QuestionnaireQuestion, WithId } from "@/lib/firestore/types";
-import { listVocabularyOptions } from "@/lib/firestore/vocabulary";
+import { listVocabularyKeys, listVocabularyOptions } from "@/lib/firestore/vocabulary";
 import { matchProductScenarios, type RecommendationInput } from "@/lib/recommendations/match";
 
 type CompletionItem = WithId<QuestionnaireCompletion>;
@@ -29,12 +30,17 @@ const buildImageGallery = (product: Product) => {
   return Array.from(new Set(images));
 };
 
-const formatAnswer = (value: unknown, question?: QuestionnaireQuestion) => {
+const formatAnswer = (
+  value: unknown,
+  question?: QuestionnaireQuestion,
+  vocabOptionMaps?: Record<string, Record<string, string>>,
+) => {
   const optionMap = question?.options ? Object.fromEntries(question.options.map((opt) => [opt.value, opt.label])) : {};
+  const fallbackMap = question?.key ? vocabOptionMaps?.[question.key] : undefined;
   const toLabel = (val: unknown) => {
     const key = String(val ?? "").trim();
     if (!key) return "—";
-    return optionMap[key] ?? key;
+    return optionMap[key] ?? fallbackMap?.[key] ?? key;
   };
   if (Array.isArray(value)) return value.map((item) => toLabel(item)).join(", ");
   if (typeof value === "object" && value) {
@@ -157,8 +163,22 @@ export default function QuestionnaireCompletionDetailPage() {
     style: {},
     distance: {},
   });
+  const [answerOptionMaps, setAnswerOptionMaps] = useState<Record<string, Record<string, string>>>({});
+  const [minMatchPercent, setMinMatchPercent] = useState<number>(65);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getRecommendationSettings()
+      .then((settings) => {
+        if (settings?.minMatchPercent !== undefined) {
+          setMinMatchPercent(settings.minMatchPercent);
+        }
+      })
+      .catch(() => {
+        // ignore settings load errors
+      });
+  }, []);
 
   useEffect(() => {
     const load = async () => {
@@ -184,7 +204,7 @@ export default function QuestionnaireCompletionDetailPage() {
         if (!completionData.matchProductIds?.length) {
           const activeProducts = await listProducts({ activeOnly: true });
           const input = buildRecommendationInput(questionsData, completionData.answers ?? {});
-          const matches = matchProductScenarios({ products: activeProducts, input });
+          const matches = matchProductScenarios({ products: activeProducts, input, minMatchPercent });
           const matchIds = matches.map((match) => match.product.id);
           const uniqueProducts = matches.map((match) => match.product);
           setComputedProducts(uniqueProducts);
@@ -203,7 +223,7 @@ export default function QuestionnaireCompletionDetailPage() {
       }
     };
     load();
-  }, [completionId]);
+  }, [completionId, minMatchPercent]);
 
   useEffect(() => {
     Promise.all([
@@ -225,24 +245,91 @@ export default function QuestionnaireCompletionDetailPage() {
       });
   }, []);
 
+  useEffect(() => {
+    if (questions.length === 0) {
+      setAnswerOptionMaps({});
+      return;
+    }
+    let isCancelled = false;
+    const load = async () => {
+      try {
+        const categories = await listVocabularyKeys({ includeInactive: true });
+        const categoryKeys = new Set(categories.map((item) => item.key));
+        const questionKeys = Array.from(new Set(questions.map((q) => q.key).filter(Boolean)));
+        const keysToLoad = questionKeys.filter((key) => categoryKeys.has(key));
+        if (keysToLoad.length === 0) {
+          if (!isCancelled) setAnswerOptionMaps({});
+          return;
+        }
+        const entries = await Promise.all(
+          keysToLoad.map(async (key) => {
+            const options = await listVocabularyOptions(key, { includeInactive: true });
+            return [key, Object.fromEntries(options.map((opt) => [opt.value, opt.label]))] as const;
+          }),
+        );
+        if (!isCancelled) {
+          setAnswerOptionMaps(Object.fromEntries(entries));
+        }
+      } catch {
+        if (!isCancelled) setAnswerOptionMaps({});
+      }
+    };
+    void load();
+    return () => {
+      isCancelled = true;
+    };
+  }, [questions]);
+
   const answersList = useMemo(() => {
     if (!completion) return [];
-    const entries = Object.entries(completion.answers ?? {});
-    const mapped = entries.map(([questionId, value]) => {
-      const question = questions.find((q) => q.id === questionId);
+    const answerMap = completion.answers ?? {};
+    const skippedMap = new Map((completion.skippedQuestions ?? []).map((item) => [item.questionId, item.reason]));
+    const entries = questions.map((question) => {
+      const value = answerMap[question.id];
+      const skippedReason = skippedMap.get(question.id);
       return {
-        id: questionId,
-        label: question?.label ?? "Întrebare ștearsă",
-        key: question?.key,
-        order: question?.order ?? 999,
+        id: question.id,
+        label: question.label ?? "Întrebare ștearsă",
+        key: question.key,
+        order: question.order ?? 999,
         value,
         question,
+        status: skippedReason ? "skipped" : value !== undefined ? "answered" : "unknown",
+        skippedReason,
       };
     });
-    return mapped.sort((a, b) => a.order - b.order);
+    const filtered = entries.filter((entry) => entry.status !== "unknown");
+    return filtered.sort((a, b) => a.order - b.order);
   }, [completion, questions]);
+  const skippedList = useMemo(() => answersList.filter((entry) => entry.status === "skipped"), [answersList]);
 
   const displayedProducts = products.length ? products : computedProducts;
+
+  const matchPercentById = useMemo(() => {
+    if (!completion || displayedProducts.length === 0 || questions.length === 0) return new Map<string, number>();
+    const input = buildRecommendationInput(questions, completion.answers ?? {});
+    const askedKeys = completion.askedQuestionIds
+      ? completion.askedQuestionIds
+          .map((id) => questions.find((q) => q.id === id)?.key)
+          .filter((key): key is string => Boolean(key))
+      : undefined;
+    const matches = matchProductScenarios({ products: displayedProducts, input, minMatchPercent, askedKeys });
+    return new Map(matches.map((match) => [match.product.id, match.matchPercent]));
+  }, [completion, displayedProducts, minMatchPercent, questions]);
+
+  const formatSkippedReason = (reason?: string) => {
+    if (reason === "inactive") return "Întrebare inactivă";
+    if (reason === "prerequisite_not_answered") return "Întrebare necesară necompletată";
+    if (reason === "rule_not_met") return "Regulă de afișare neîndeplinită";
+    return "Întrebare sărită";
+  };
+
+  const getSkippedBadgeClass = (reason?: string) => {
+    if (reason === "inactive") return "border-slate-400 text-slate-700 dark:text-slate-300";
+    if (reason === "prerequisite_not_answered") return "border-amber-500 text-amber-700 dark:text-amber-300";
+    if (reason === "rule_not_met") return "border-rose-500 text-rose-700 dark:text-rose-300";
+    return "border-muted-foreground text-muted-foreground";
+  };
 
   const renderTagBadges = (label: string, values: string[], map: Record<string, string>) => {
     if (!values.length) return null;
@@ -332,14 +419,50 @@ export default function QuestionnaireCompletionDetailPage() {
             ) : (
               answersList.map((entry) => (
                 <div key={entry.id} className="rounded-md border bg-background p-3">
-                  <div className="font-medium text-sm">{entry.label}</div>
-                  <div className="mt-1 text-muted-foreground text-sm">{formatAnswer(entry.value, entry.question)}</div>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="font-medium text-sm">{entry.label}</div>
+                    <Badge
+                      variant={entry.status === "skipped" ? "outline" : "secondary"}
+                      className={entry.status === "skipped" ? getSkippedBadgeClass(entry.skippedReason) : undefined}
+                    >
+                      {entry.status === "skipped" ? "Sărită" : "Răspuns"}
+                    </Badge>
+                  </div>
+                  <div className="mt-1 text-muted-foreground text-sm">
+                    {entry.status === "skipped"
+                      ? formatSkippedReason(entry.skippedReason)
+                      : formatAnswer(entry.value, entry.question, answerOptionMaps)}
+                  </div>
                 </div>
               ))
             )}
           </div>
         </CardContent>
       </Card>
+
+      {skippedList.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Întrebări sărite ({skippedList.length})</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {skippedList.map((entry) => (
+              <div
+                key={entry.id}
+                className="flex items-center justify-between gap-2 rounded-md border bg-background p-3"
+              >
+                <div>
+                  <div className="font-medium text-sm">{entry.label}</div>
+                  <div className="text-muted-foreground text-xs">{formatSkippedReason(entry.skippedReason)}</div>
+                </div>
+                <Badge variant="outline" className={getSkippedBadgeClass(entry.skippedReason)}>
+                  Sărită
+                </Badge>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card>
         <CardHeader>
@@ -352,14 +475,18 @@ export default function QuestionnaireCompletionDetailPage() {
             <div className="space-y-4">
               {displayedProducts.map((product, idx) => {
                 const gallery = buildImageGallery(product);
+                const matchPercent = matchPercentById.get(product.id);
                 return (
                   <div key={product.id} className="group relative rounded-lg border p-4 transition-all hover:shadow-md">
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex-1 space-y-2">
                         <div className="flex items-start gap-3">
-                          <Badge variant="secondary" className="mt-0.5">
-                            #{idx + 1}
-                          </Badge>
+                          <div className="flex flex-col gap-2">
+                            <Badge variant="secondary">#{idx + 1}</Badge>
+                            {matchPercent !== undefined ? (
+                              <Badge variant="outline">Potrivire {matchPercent}%</Badge>
+                            ) : null}
+                          </div>
                           {gallery.length ? (
                             <div className="relative size-14 overflow-hidden rounded-md border bg-muted/20">
                               <Image

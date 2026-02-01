@@ -27,6 +27,7 @@ export type VocabularyCategory = {
   key: string;
   title: string;
   description?: string;
+  standardQuestion?: string;
   active: boolean;
   order: number;
 };
@@ -148,6 +149,7 @@ export async function createVocabularyKey(params: {
   key: string;
   title: string;
   description?: string;
+  standardQuestion?: string;
   order?: number;
   active?: boolean;
   options?: QuestionnaireQuestionOption[];
@@ -164,6 +166,7 @@ export async function createVocabularyKey(params: {
     key: normalizedKey,
     title: params.title.trim(),
     description: params.description?.trim() || undefined,
+    standardQuestion: params.standardQuestion?.trim() || undefined,
     order: params.order ?? 0,
     active: params.active ?? true,
   };
@@ -198,7 +201,7 @@ export async function createVocabularyKey(params: {
 
 export async function updateVocabularyKey(
   key: string,
-  patch: Partial<Pick<VocabularyCategory, "title" | "description" | "order" | "active">>,
+  patch: Partial<Pick<VocabularyCategory, "title" | "description" | "standardQuestion" | "order" | "active">>,
 ) {
   const { db } = initFirebase();
   if (!db) throw new Error("Firestore not initialized.");
@@ -206,6 +209,7 @@ export async function updateVocabularyKey(
   const payload: Record<string, unknown> = {
     ...(patch.title !== undefined ? { title: patch.title.trim() } : {}),
     ...(patch.description !== undefined ? { description: patch.description.trim() } : {}),
+    ...(patch.standardQuestion !== undefined ? { standardQuestion: patch.standardQuestion.trim() || undefined } : {}),
     ...(patch.order !== undefined ? { order: patch.order } : {}),
     ...(patch.active !== undefined ? { active: patch.active } : {}),
     updatedAt: serverTimestamp(),
