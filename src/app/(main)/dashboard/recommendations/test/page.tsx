@@ -6,6 +6,7 @@ import Image from "next/image";
 
 import { CheckCircle2, ChevronLeft, ChevronRight, Heart, History, List } from "lucide-react";
 
+import { PageHelpDialog } from "@/components/mybutterfly/help/page-help-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -828,9 +829,12 @@ export default function RecommendationTestPage() {
             Simulare completă a fluxului de recomandări din aplicația mobilă.
           </p>
         </div>
-        <Button type="button" variant="outline" onClick={() => load()} disabled={isLoading}>
-          Reîmprospătează
-        </Button>
+        <div className="flex items-center gap-2">
+          <PageHelpDialog helpKey="recommendations.test" />
+          <Button type="button" variant="outline" onClick={() => load()} disabled={isLoading}>
+            Reîmprospătează
+          </Button>
+        </div>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">

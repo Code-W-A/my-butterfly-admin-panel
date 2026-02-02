@@ -7,6 +7,7 @@ import Link from "next/link";
 import { Plus } from "lucide-react";
 
 import { VocabularyMultiSelect } from "@/components/mybutterfly/forms/vocabulary-multi-select";
+import { PageHelpDialog } from "@/components/mybutterfly/help/page-help-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -263,10 +264,13 @@ export default function RecommendationRulesPage() {
             Creează reguli reutilizabile pe care le poți atribui produselor.
           </p>
         </div>
-        <Button type="button" onClick={openCreate}>
-          <Plus className="mr-2 size-4" />
-          Creează reguli
-        </Button>
+        <div className="flex items-center gap-2">
+          <PageHelpDialog helpKey="recommendation-rules" />
+          <Button type="button" onClick={openCreate}>
+            <Plus className="mr-2 size-4" />
+            Creează reguli
+          </Button>
+        </div>
       </div>
 
       <div className="rounded-md border">

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { PageHelpDialog } from "@/components/mybutterfly/help/page-help-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -56,9 +57,12 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="font-semibold text-2xl">Setări</h1>
-        <p className="text-muted-foreground text-sm">Configurează comportamentul recomandărilor.</p>
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h1 className="font-semibold text-2xl">Setări</h1>
+          <p className="text-muted-foreground text-sm">Configurează comportamentul recomandărilor.</p>
+        </div>
+        <PageHelpDialog helpKey="settings" />
       </div>
 
       <Card>

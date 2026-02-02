@@ -23,41 +23,50 @@ const STEPS: Step[] = [
   {
     title: "1) Vocabulary (dicționare)",
     description:
-      "Aici definești listele de valori folosite în întrebări și reguli (ex: level/style/distance/priority/preferences). Activează/ordonează valorile ca să apară corect în chestionar.",
+      "Aici definești listele de valori folosite în întrebări și reguli (ex: level/style/distance/priority/preferences). Setează și „Întrebare standard” pe categorii ca să se completeze automat textul întrebării în editor.",
     links: [{ label: "Deschide Vocabulary", href: "/dashboard/vocabulary" }],
   },
   {
     title: "2) Chestionar",
     description:
-      "Creezi chestionarul și întrebările. Pentru selectări, folosește tipurile single_select / multi_select și setează key-urile (ex: level, style, distance, priority, preferences, budget).",
+      "Creezi chestionarul și întrebările. Pentru selectări, folosește tipurile single_select / multi_select și setează key-urile (ex: level, style, distance, priority, preferences, budget). Întrebările condiționale (visibility rules) pot fi sărite; la completări/cereri vei vedea „Întrebări sărite” cu motivul.",
     links: [{ label: "Deschide Chestionare", href: "/dashboard/questionnaires" }],
   },
   {
-    title: "3) Produse",
+    title: "3) Reguli recomandări (reutilizabile)",
     description:
-      "Adaugi produse manual sau import din PrestaShop, setezi preț/monedă, imagini și atribute (control/spin/viteză/greutate).",
+      "Creezi reguli reutilizabile (o regulă = un scenariu) pe care le poți atribui rapid pe multe produse. Din pagina regulilor poți și „Leagă produse” ca să mergi direct în atribuirea pe listă.",
+    links: [{ label: "Deschide Reguli recomandări", href: "/dashboard/recommendation-rules" }],
+  },
+  {
+    title: "4) Produse (import + reguli)",
+    description:
+      "Adaugi produse manual sau import din PrestaShop, setezi preț/monedă, imagini și atribute (control/spin/viteză/greutate). Apoi imporți/atribui reguli (merge) în produs. La import PrestaShop, produsele deja importate sunt marcate și nu pot fi selectate; poți deschide direct produsul existent.",
     links: [
       { label: "Deschide Produse", href: "/dashboard/products" },
       { label: "Adaugă produs", href: "/dashboard/products/new" },
     ],
   },
   {
-    title: "4) Reguli recomandare (pe produs)",
+    title: "5) Setări recomandări",
     description:
-      "În fiecare produs adaugi reguli cu condiții (nivel/stil/distanță/prioritate/buget) + order + activ. Aceste reguli determină dacă produsul apare în rezultate și cu ce prioritate.",
-    links: [{ label: "Editează un produs (din listă)", href: "/dashboard/products" }],
+      "Configurezi pragul minim de potrivire (%). Vor fi afișate toate produsele care au matchPercent peste prag (nu există limită „top 5”).",
+    links: [{ label: "Deschide Setări", href: "/dashboard/settings" }],
   },
   {
-    title: "5) Test recomandări",
+    title: "6) Test recomandări (debug + istoric)",
     description:
-      "Rulezi chestionarul ca să verifici rapid dacă regulile dau 1–5 rezultate și dacă explicațiile sunt OK. Poți vedea imagini + link către magazin (PrestaShop) acolo unde există.",
+      "Rulezi chestionarul ca să verifici recomandările, badge-ul de potrivire (%) și explicațiile. Dacă NEXT_PUBLIC_DEBUG este activ, ai un buton „Debug” care arată calculele (inputs, prag, breakdown pe produse și „scenariul ales”).",
     links: [{ label: "Deschide Test recomandări", href: "/dashboard/recommendations/test" }],
   },
   {
-    title: "6) Cereri specialist (opțional)",
+    title: "7) Completări & Cereri specialist",
     description:
-      "Vezi cererile, schimbi statusul (nou / în lucru / trimis) și trimiți răspunsul: mesaj + 1–3 produse recomandate.",
-    links: [{ label: "Deschide Cereri", href: "/dashboard/requests" }],
+      "În „Chestionare completate” vezi istoricul (răspunsuri, recomandări, match%) și secțiunea „Întrebări sărite”. În „Cereri” analizezi cazul și trimiți răspunsul (mesaj + produse recomandate), cu aceleași informații despre întrebări sărite.",
+    links: [
+      { label: "Deschide Completări", href: "/dashboard/questionnaire-completions" },
+      { label: "Deschide Cereri", href: "/dashboard/requests" },
+    ],
   },
 ];
 
@@ -109,7 +118,7 @@ export function AdminOnboardingDialog({
         <ScrollArea className="max-h-[70vh] pr-4">
           <div className="space-y-6">
             <div className="text-muted-foreground text-sm">
-              Începe cu Vocabulary, apoi Chestionar, apoi Produse + Reguli, și verifică în Test recomandări.
+              Începe cu Vocabulary, apoi Chestionar, apoi Reguli, apoi Produse, și verifică în Test recomandări.
             </div>
             <Separator />
             {STEPS.map((step) => (
