@@ -85,6 +85,13 @@ export async function setQuestionnaireCompletionMatchProductIds(completionId: st
   return updateDoc(ref, { matchProductIds });
 }
 
+export async function setQuestionnaireCompletionMatchPackageIds(completionId: string, matchPackageIds: string[]) {
+  const { db } = initFirebase();
+  if (!db) throw new Error("Firestore not initialized.");
+  const ref = doc(db, "questionnaireCompletions", completionId);
+  return updateDoc(ref, { matchPackageIds });
+}
+
 export async function deleteQuestionnaireCompletion(completionId: string) {
   const { db } = initFirebase();
   if (!db) throw new Error("Firestore not initialized.");

@@ -7,6 +7,7 @@ import {
   ListChecks,
   type LucideIcon,
   MessageSquare,
+  Package2,
   Settings,
   ShoppingBag,
 } from "lucide-react";
@@ -60,6 +61,11 @@ export const sidebarItems: NavGroup[] = [
         title: "Produse",
         url: "/dashboard/products",
         icon: ShoppingBag,
+      },
+      {
+        title: "Pachete",
+        url: "/dashboard/packages",
+        icon: Package2,
       },
       {
         title: "Reguli recomandări",

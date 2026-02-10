@@ -25,6 +25,7 @@ import {
   createQuestionnaireCompletion,
   setQuestionnaireCompletionSpecialistRequestId,
 } from "@/lib/firestore/completions";
+import { listPackages } from "@/lib/firestore/packages";
 import { listProducts, updateProduct } from "@/lib/firestore/products";
 import { listQuestionnaires } from "@/lib/firestore/questionnaires";
 import { listQuestions } from "@/lib/firestore/questions";
@@ -35,10 +36,12 @@ import type {
   Questionnaire,
   QuestionnaireQuestion,
   QuestionnaireQuestionVisibilityRule,
+  RecommendationPackage,
   WithId,
 } from "@/lib/firestore/types";
 import { listVocabularyOptions } from "@/lib/firestore/vocabulary";
 import { matchProductScenarios, type RecommendationInput } from "@/lib/recommendations/match";
+import { matchPackageScenarios } from "@/lib/recommendations/match-packages";
 
 const isDebugEnabled =
   process.env.NEXT_PUBLIC_DEBUG === "1" ||
@@ -50,6 +53,7 @@ type VocabMap = Record<string, string>;
 
 type AnswerMap = Record<string, unknown>;
 type RangeAnswer = { min?: string; max?: string };
+type ResultMode = "packages" | "products";
 type HistorySession = {
   id: string;
   questionnaireId: string;
@@ -57,7 +61,9 @@ type HistorySession = {
   createdAt: number;
   answers: AnswerMap;
   input: RecommendationInput;
+  resultMode: ResultMode;
   matchProductIds: string[];
+  matchPackageIds: string[];
   askedQuestionIds?: string[];
 };
 
@@ -253,12 +259,21 @@ const isRuleSatisfied = (
 
 const formatTagValue = (map: VocabMap, value: string) => map[value] ?? value;
 
+const formatPackageRole = (role?: string) => {
+  if (role === "single") return "Produs";
+  if (role === "blade") return "Lemn";
+  if (role === "rubber_fh") return "Față FH";
+  if (role === "rubber_bh") return "Față BH";
+  return "Produs";
+};
+
 export default function RecommendationTestPage() {
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>("questionnaire");
   const { user: authUser } = useAuthUser();
 
   const [products, setProducts] = useState<WithId<Product>[]>([]);
+  const [packages, setPackages] = useState<WithId<RecommendationPackage>[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingQuestions, setIsLoadingQuestions] = useState(false);
 
@@ -268,8 +283,15 @@ export default function RecommendationTestPage() {
   const [answers, setAnswers] = useState<AnswerMap>({});
   const [currentStep, setCurrentStep] = useState(0);
   const [finalizedInput, setFinalizedInput] = useState<RecommendationInput | null>(null);
-  const [finalizedMatches, setFinalizedMatches] = useState<ReturnType<typeof matchProductScenarios>>([]);
-  const [selectedMatch, setSelectedMatch] = useState<ReturnType<typeof matchProductScenarios>[0] | null>(null);
+  const [finalizedProductMatches, setFinalizedProductMatches] = useState<ReturnType<typeof matchProductScenarios>>([]);
+  const [finalizedPackageMatches, setFinalizedPackageMatches] = useState<ReturnType<typeof matchPackageScenarios>>([]);
+  const [finalizedResultMode, setFinalizedResultMode] = useState<ResultMode | null>(null);
+  const [selectedProductMatch, setSelectedProductMatch] = useState<ReturnType<typeof matchProductScenarios>[0] | null>(
+    null,
+  );
+  const [selectedPackageMatch, setSelectedPackageMatch] = useState<ReturnType<typeof matchPackageScenarios>[0] | null>(
+    null,
+  );
   const [sortMode, setSortMode] = useState<"fit" | "price">("fit");
   const [minMatchPercent, setMinMatchPercent] = useState<number>(65);
   const [favorites, setFavorites] = useState<string[]>([]);
@@ -309,6 +331,7 @@ export default function RecommendationTestPage() {
       Object.fromEntries(questions.map((question) => [question.id, question])) as Record<string, QuestionnaireQuestion>,
     [questions],
   );
+  const productsById = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
 
   const openProductUrl = useCallback(async (product: WithId<Product>) => {
     const fallbackUrl = product.productUrl;
@@ -363,14 +386,17 @@ export default function RecommendationTestPage() {
   const load = useCallback(async () => {
     try {
       setIsLoading(true);
-      const [productsData, questionnairesData, levelOptions, styleOptions, distanceOptions] = await Promise.all([
-        listProducts({ activeOnly: true }),
-        listQuestionnaires(),
-        listVocabularyOptions("level", { includeInactive: false }),
-        listVocabularyOptions("style", { includeInactive: false }),
-        listVocabularyOptions("distance", { includeInactive: false }),
-      ]);
+      const [productsData, packagesData, questionnairesData, levelOptions, styleOptions, distanceOptions] =
+        await Promise.all([
+          listProducts({ activeOnly: true }),
+          listPackages({ activeOnly: true }),
+          listQuestionnaires(),
+          listVocabularyOptions("level", { includeInactive: false }),
+          listVocabularyOptions("style", { includeInactive: false }),
+          listVocabularyOptions("distance", { includeInactive: false }),
+        ]);
       setProducts(productsData);
+      setPackages(packagesData);
       setQuestionnaires(questionnairesData);
       const toMap = (options: VocabularyOption[]) =>
         Object.fromEntries(options.map((o) => [o.value, o.label])) as VocabMap;
@@ -416,8 +442,11 @@ export default function RecommendationTestPage() {
       setAnswers({});
       setCurrentStep(0);
       setFinalizedInput(null);
-      setFinalizedMatches([]);
-      setSelectedMatch(null);
+      setFinalizedProductMatches([]);
+      setFinalizedPackageMatches([]);
+      setFinalizedResultMode(null);
+      setSelectedProductMatch(null);
+      setSelectedPackageMatch(null);
       setPendingSession(null);
       return;
     }
@@ -437,22 +466,37 @@ export default function RecommendationTestPage() {
                 .map((id) => itemsById[id]?.key)
                 .filter((key): key is string => Boolean(key))
             : undefined;
-          const nextMatches = matchProductScenarios({
+          const nextProductMatches = matchProductScenarios({
             products,
             input: pendingSession.input,
             minMatchPercent,
             askedKeys,
             debug: isDebugEnabled,
           });
-          setFinalizedMatches(nextMatches);
+          const nextPackageMatches = matchPackageScenarios({
+            packages,
+            productsById,
+            input: pendingSession.input,
+            minMatchPercent,
+            askedKeys,
+            debug: isDebugEnabled,
+          });
+          const nextMode: ResultMode =
+            pendingSession.resultMode === "packages" && nextPackageMatches.length > 0 ? "packages" : "products";
+          setFinalizedProductMatches(nextProductMatches);
+          setFinalizedPackageMatches(nextPackageMatches);
+          setFinalizedResultMode(nextMode);
           setActiveTab("results");
           setPendingSession(null);
         } else {
           setAnswers({});
           setCurrentStep(0);
           setFinalizedInput(null);
-          setFinalizedMatches([]);
-          setSelectedMatch(null);
+          setFinalizedProductMatches([]);
+          setFinalizedPackageMatches([]);
+          setFinalizedResultMode(null);
+          setSelectedProductMatch(null);
+          setSelectedPackageMatch(null);
         }
       })
       .catch((err) => {
@@ -463,7 +507,7 @@ export default function RecommendationTestPage() {
       .finally(() => {
         setIsLoadingQuestions(false);
       });
-  }, [selectedQuestionnaireId, products, pendingSession, minMatchPercent]);
+  }, [selectedQuestionnaireId, products, packages, pendingSession, minMatchPercent, productsById]);
 
   useEffect(() => {
     if (orderedQuestions.length === 0) {
@@ -515,16 +559,138 @@ export default function RecommendationTestPage() {
     [orderedQuestions, answers],
   );
 
-  const matches = useMemo(() => {
-    const askedKeys = orderedQuestions.map((question) => question.key);
+  const askedKeysForCurrent = useMemo(() => orderedQuestions.map((question) => question.key), [orderedQuestions]);
+  const productMatches = useMemo(() => {
     return matchProductScenarios({
       products,
       input,
       minMatchPercent,
-      askedKeys,
+      askedKeys: askedKeysForCurrent,
       debug: isDebugEnabled,
     });
-  }, [products, input, minMatchPercent, orderedQuestions]);
+  }, [products, input, minMatchPercent, askedKeysForCurrent]);
+  const packageMatches = useMemo(() => {
+    return matchPackageScenarios({
+      packages,
+      productsById,
+      input,
+      minMatchPercent,
+      askedKeys: askedKeysForCurrent,
+      debug: isDebugEnabled,
+    });
+  }, [packages, productsById, input, minMatchPercent, askedKeysForCurrent]);
+  const liveResultMode: ResultMode = packageMatches.length > 0 ? "packages" : "products";
+  const liveProductMatches = liveResultMode === "products" ? productMatches : [];
+  const livePackageMatches = liveResultMode === "packages" ? packageMatches : [];
+  const currentResultMode = finalizedResultMode ?? liveResultMode;
+  const currentProductMatches = finalizedResultMode ? finalizedProductMatches : liveProductMatches;
+  const currentPackageMatches = finalizedResultMode ? finalizedPackageMatches : livePackageMatches;
+
+  const sortedProductMatches = useMemo(() => {
+    const next = [...currentProductMatches];
+    if (sortMode === "price") {
+      next.sort((a, b) => a.product.price - b.product.price);
+      return next;
+    }
+    next.sort((a, b) => {
+      if (a.matchPercent !== b.matchPercent) return b.matchPercent - a.matchPercent;
+      if (a.fitScore !== b.fitScore) return b.fitScore - a.fitScore;
+      return a.product.price - b.product.price;
+    });
+    return next;
+  }, [currentProductMatches, sortMode]);
+  const sortedPackageMatches = useMemo(() => {
+    const next = [...currentPackageMatches];
+    if (sortMode === "price") {
+      next.sort((a, b) => a.package.totalPrice - b.package.totalPrice);
+      return next;
+    }
+    next.sort((a, b) => {
+      if (a.matchPercent !== b.matchPercent) return b.matchPercent - a.matchPercent;
+      if (a.fitScore !== b.fitScore) return b.fitScore - a.fitScore;
+      return a.package.totalPrice - b.package.totalPrice;
+    });
+    return next;
+  }, [currentPackageMatches, sortMode]);
+
+  const debugPayload = useMemo(() => {
+    if (!isDebugEnabled) return null;
+    const askedQuestionIds = orderedQuestions.map((question) => question.id);
+    const askedKeys = orderedQuestions.map((question) => question.key);
+    const base = {
+      meta: {
+        mode: currentResultMode,
+        minMatchPercent,
+        askedQuestionIds,
+        askedKeys,
+        orderedQuestionCount: orderedQuestions.length,
+        totalQuestionCount: questions.length,
+      },
+      input: finalizedInput ?? input,
+      answers,
+      skippedQuestions: computeSkippedQuestions(),
+    };
+    if (currentResultMode === "packages") {
+      if (!sortedPackageMatches.length) return null;
+      return {
+        ...base,
+        results: sortedPackageMatches.map((match) => ({
+          package: {
+            id: match.package.id,
+            title: match.package.title,
+            totalPrice: match.package.totalPrice,
+            currency: match.package.currency,
+            mode: match.package.mode,
+            items: match.package.items,
+          },
+          scenario: match.scenario,
+          matchPercent: match.matchPercent,
+          fitScore: match.fitScore,
+          debug: match.debug ?? null,
+        })),
+      };
+    }
+    if (!sortedProductMatches.length) return null;
+    return {
+      ...base,
+      results: sortedProductMatches.map((match) => ({
+        product: {
+          id: match.product.id,
+          name: match.product.name,
+          brand: match.product.brand,
+          price: match.product.price,
+          currency: match.product.currency,
+        },
+        scenario: match.scenario,
+        matchPercent: match.matchPercent,
+        fitScore: match.fitScore,
+        debug: match.debug ?? null,
+      })),
+    };
+  }, [
+    answers,
+    computeSkippedQuestions,
+    currentResultMode,
+    finalizedInput,
+    input,
+    minMatchPercent,
+    orderedQuestions,
+    questions.length,
+    sortedPackageMatches,
+    sortedProductMatches,
+  ]);
+
+  const debugJson = useMemo(() => {
+    if (!debugPayload) return "";
+    try {
+      return JSON.stringify(debugPayload, null, 2);
+    } catch {
+      return "Nu pot serializa debug payload.";
+    }
+  }, [debugPayload]);
+
+  const hasNoResults =
+    currentResultMode === "packages" ? sortedPackageMatches.length === 0 : sortedProductMatches.length === 0;
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -532,7 +698,23 @@ export default function RecommendationTestPage() {
       const storedFavorites = window.localStorage.getItem(FAVORITES_KEY);
       const storedHistory = window.localStorage.getItem(HISTORY_KEY);
       if (storedFavorites) setFavorites(JSON.parse(storedFavorites));
-      if (storedHistory) setHistory(JSON.parse(storedHistory));
+      if (storedHistory) {
+        const parsed = JSON.parse(storedHistory) as Array<Partial<HistorySession>>;
+        setHistory(
+          parsed.map((session) => ({
+            id: session.id ?? generateSessionId(),
+            questionnaireId: session.questionnaireId ?? "",
+            questionnaireTitle: session.questionnaireTitle ?? "Chestionar",
+            createdAt: session.createdAt ?? Date.now(),
+            answers: session.answers ?? {},
+            input: session.input ?? {},
+            resultMode: session.resultMode === "packages" ? "packages" : "products",
+            matchProductIds: session.matchProductIds ?? [],
+            matchPackageIds: session.matchPackageIds ?? [],
+            askedQuestionIds: session.askedQuestionIds,
+          })),
+        );
+      }
     } catch {
       // ignore storage errors
     }
@@ -569,7 +751,8 @@ export default function RecommendationTestPage() {
             email,
           },
           answers: session.answers,
-          matchProductIds: session.matchProductIds,
+          ...(session.matchProductIds.length ? { matchProductIds: session.matchProductIds } : {}),
+          ...(session.matchPackageIds.length ? { matchPackageIds: session.matchPackageIds } : {}),
           askedQuestionIds: session.askedQuestionIds,
           skippedQuestions: computeSkippedQuestions(),
         });
@@ -592,6 +775,7 @@ export default function RecommendationTestPage() {
     const sessionId = generateSessionId();
     const questionnaireTitle =
       questionnaires.find((item) => item.id === selectedQuestionnaireId)?.title ?? "Chestionar";
+    const resultMode: ResultMode = packageMatches.length > 0 ? "packages" : "products";
     const session: HistorySession = {
       id: sessionId,
       questionnaireId: selectedQuestionnaireId,
@@ -599,12 +783,18 @@ export default function RecommendationTestPage() {
       createdAt: Date.now(),
       answers,
       input,
-      matchProductIds: matches.map((match) => match.product.id),
+      resultMode,
+      matchProductIds: resultMode === "products" ? liveProductMatches.map((match) => match.product.id) : [],
+      matchPackageIds: resultMode === "packages" ? livePackageMatches.map((match) => match.package.id) : [],
       askedQuestionIds: orderedQuestions.map((question) => question.id),
     };
     setHistory((prev) => [session, ...prev].slice(0, 20));
     setFinalizedInput(input);
-    setFinalizedMatches(matches);
+    setFinalizedProductMatches(productMatches);
+    setFinalizedPackageMatches(packageMatches);
+    setFinalizedResultMode(resultMode);
+    setSelectedProductMatch(null);
+    setSelectedPackageMatch(null);
     setActiveTab("results");
     setRequestSent(false);
     void logQuestionnaireCompletion(session);
@@ -621,8 +811,11 @@ export default function RecommendationTestPage() {
     setAnswers({});
     setCurrentStep(0);
     setFinalizedInput(null);
-    setFinalizedMatches([]);
-    setSelectedMatch(null);
+    setFinalizedProductMatches([]);
+    setFinalizedPackageMatches([]);
+    setFinalizedResultMode(null);
+    setSelectedProductMatch(null);
+    setSelectedPackageMatch(null);
     setActiveTab("questionnaire");
     setRequestSent(false);
     setRequestError(null);
@@ -633,73 +826,6 @@ export default function RecommendationTestPage() {
   const toggleFavorite = (productId: string) => {
     setFavorites((prev) => (prev.includes(productId) ? prev.filter((id) => id !== productId) : [...prev, productId]));
   };
-
-  const sortedMatches = useMemo(() => {
-    const list = finalizedMatches.length ? finalizedMatches : matches;
-    const next = [...list];
-    if (sortMode === "price") {
-      next.sort((a, b) => a.product.price - b.product.price);
-      return next;
-    }
-    next.sort((a, b) => {
-      if (a.matchPercent !== b.matchPercent) return b.matchPercent - a.matchPercent;
-      if (a.fitScore !== b.fitScore) return b.fitScore - a.fitScore;
-      return a.product.price - b.product.price;
-    });
-    return next;
-  }, [finalizedMatches, matches, sortMode]);
-
-  const debugPayload = useMemo(() => {
-    if (!isDebugEnabled) return null;
-    const list = finalizedMatches.length ? finalizedMatches : matches;
-    if (!list.length) return null;
-    const askedQuestionIds = orderedQuestions.map((q) => q.id);
-    const askedKeys = orderedQuestions.map((q) => q.key);
-    return {
-      meta: {
-        minMatchPercent,
-        askedQuestionIds,
-        askedKeys,
-        orderedQuestionCount: orderedQuestions.length,
-        totalQuestionCount: questions.length,
-      },
-      input: finalizedInput ?? input,
-      answers,
-      skippedQuestions: computeSkippedQuestions(),
-      results: list.map((match) => ({
-        product: {
-          id: match.product.id,
-          name: match.product.name,
-          brand: match.product.brand,
-          price: match.product.price,
-          currency: match.product.currency,
-        },
-        scenario: match.scenario,
-        matchPercent: match.matchPercent,
-        fitScore: match.fitScore,
-        debug: match.debug ?? null,
-      })),
-    };
-  }, [
-    answers,
-    computeSkippedQuestions,
-    finalizedInput,
-    finalizedMatches,
-    input,
-    matches,
-    minMatchPercent,
-    orderedQuestions,
-    questions.length,
-  ]);
-
-  const debugJson = useMemo(() => {
-    if (!debugPayload) return "";
-    try {
-      return JSON.stringify(debugPayload, null, 2);
-    } catch {
-      return "Nu pot serializa debug payload.";
-    }
-  }, [debugPayload]);
 
   useEffect(() => {
     if (!finalizedInput) return;
@@ -727,6 +853,9 @@ export default function RecommendationTestPage() {
     const phone = specialistForm.phone.trim();
     const email = specialistForm.email.trim();
     const note = specialistForm.note.trim();
+    const mode = finalizedResultMode ?? liveResultMode;
+    const matchProductIds = mode === "products" ? finalizedProductMatches.map((match) => match.product.id) : [];
+    const matchPackageIds = mode === "packages" ? finalizedPackageMatches.map((match) => match.package.id) : [];
     if (!name || !phone) {
       setRequestError("Completează numele și telefonul.");
       return;
@@ -744,7 +873,8 @@ export default function RecommendationTestPage() {
           phone,
           ...(email ? { email } : {}),
         },
-        matchProductIds: finalizedMatches.map((match) => match.product.id),
+        ...(matchProductIds.length ? { matchProductIds } : {}),
+        ...(matchPackageIds.length ? { matchPackageIds } : {}),
         askedQuestionIds: orderedQuestions.map((question) => question.id),
         skippedQuestions: computeSkippedQuestions(),
         source: "recommendation_test",
@@ -788,14 +918,28 @@ export default function RecommendationTestPage() {
     setAnswers(session.answers);
     setFinalizedInput(session.input);
     const askedKeys = getAskedKeysFromIds(session.askedQuestionIds);
-    const nextMatches = matchProductScenarios({
+    const nextProductMatches = matchProductScenarios({
       products,
       input: session.input,
       minMatchPercent,
       askedKeys,
       debug: isDebugEnabled,
     });
-    setFinalizedMatches(nextMatches);
+    const nextPackageMatches = matchPackageScenarios({
+      packages,
+      productsById,
+      input: session.input,
+      minMatchPercent,
+      askedKeys,
+      debug: isDebugEnabled,
+    });
+    const nextMode: ResultMode =
+      session.resultMode === "packages" && nextPackageMatches.length > 0 ? "packages" : "products";
+    setFinalizedProductMatches(nextProductMatches);
+    setFinalizedPackageMatches(nextPackageMatches);
+    setFinalizedResultMode(nextMode);
+    setSelectedProductMatch(null);
+    setSelectedPackageMatch(null);
     setActiveTab("results");
   };
 
@@ -1136,7 +1280,9 @@ export default function RecommendationTestPage() {
             <CardHeader>
               <CardTitle>Rezultate recomandări</CardTitle>
               <CardDescription>
-                Produse recomandate pe baza răspunsurilor tale. Poți sorta după potrivire sau preț.
+                {currentResultMode === "packages"
+                  ? "Pachete recomandate pe baza răspunsurilor tale. Dacă nu există pachete eligibile, se folosește fallback pe produse."
+                  : "Produse recomandate pe baza răspunsurilor tale (fallback). Poți sorta după potrivire sau preț."}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
@@ -1158,103 +1304,201 @@ export default function RecommendationTestPage() {
                 </Button>
               </div>
 
-              {sortedMatches.length === 0 ? (
+              {hasNoResults ? (
                 <div className="rounded-lg border border-dashed p-12 text-center">
-                  <p className="text-muted-foreground">Nu există produse care să se potrivească criteriilor tale.</p>
+                  <p className="text-muted-foreground">
+                    {currentResultMode === "packages"
+                      ? "Nu există pachete care să se potrivească criteriilor tale."
+                      : "Nu există produse care să se potrivească criteriilor tale."}
+                  </p>
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {sortedMatches.map((match, idx) => {
-                    const gallery = buildImageGallery(match.product);
-                    return (
-                      <div
-                        key={`${match.product.id}-${match.scenario.order}`}
-                        className="group relative rounded-lg border p-4 transition-all hover:shadow-md"
-                      >
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="flex-1 space-y-2">
-                            <div className="flex items-start gap-3">
-                              <div className="flex flex-col gap-2">
-                                <Badge variant="secondary">#{idx + 1}</Badge>
-                                <Badge variant="outline">Potrivire {match.matchPercent}%</Badge>
-                              </div>
-                              {gallery.length ? (
-                                <button
-                                  type="button"
-                                  className="relative size-14 overflow-hidden rounded-md border bg-muted/20"
-                                  onClick={() =>
-                                    openImageViewer(gallery, 0, match.product.name, match.product.productUrl)
-                                  }
-                                  title="Vezi pozele"
-                                >
-                                  <Image
-                                    src={gallery[0]}
-                                    alt={match.product.name}
-                                    fill
-                                    sizes="56px"
-                                    className="object-cover"
-                                    unoptimized
-                                  />
-                                  {gallery.length > 1 ? (
-                                    <span className="absolute right-1 bottom-1 rounded bg-background/80 px-1 font-medium text-[10px]">
-                                      +{gallery.length - 1}
-                                    </span>
-                                  ) : null}
-                                </button>
-                              ) : null}
-                              <div>
-                                <h3 className="font-semibold text-lg">{match.product.name}</h3>
-                                <p className="text-muted-foreground text-sm">
-                                  {match.product.price} {match.product.currency}
-                                </p>
-                                {match.product.productUrl ? (
-                                  <a
-                                    href={match.product.productUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="text-primary text-sm underline-offset-4 hover:underline"
-                                    onClick={(event) => {
-                                      event.preventDefault();
-                                      void openProductUrl(match.product);
-                                    }}
-                                  >
-                                    Vezi produsul în magazin
-                                  </a>
+                  {currentResultMode === "packages"
+                    ? sortedPackageMatches.map((match, idx) => {
+                        return (
+                          <div
+                            key={`${match.package.id}-${match.scenario.order}`}
+                            className="group relative rounded-lg border p-4 transition-all hover:shadow-md"
+                          >
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="flex-1 space-y-2">
+                                <div className="flex items-start gap-3">
+                                  <div className="flex flex-col gap-2">
+                                    <Badge variant="secondary">#{idx + 1}</Badge>
+                                    <Badge variant="outline">Potrivire {match.matchPercent}%</Badge>
+                                  </div>
+                                  <div>
+                                    <h3 className="font-semibold text-lg">{match.package.title}</h3>
+                                    <p className="text-muted-foreground text-sm">
+                                      {match.package.totalPrice} {match.package.currency} •{" "}
+                                      {match.package.mode === "single"
+                                        ? "single"
+                                        : match.package.mode === "triple"
+                                          ? "triple"
+                                          : "custom"}
+                                    </p>
+                                  </div>
+                                </div>
+                                {match.scenario.explanationTemplate ? (
+                                  <p className="pl-11 text-muted-foreground text-sm">
+                                    {match.scenario.explanationTemplate}
+                                  </p>
                                 ) : null}
+                                <div className="space-y-2 pl-11">
+                                  {match.package.items.map((item, index) => {
+                                    const product = productsById.get(item.productId);
+                                    const gallery = product ? buildImageGallery(product) : [];
+                                    return (
+                                      <div
+                                        key={`${match.package.id}-${index}-${item.productId}`}
+                                        className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 p-2"
+                                      >
+                                        <Badge variant="outline">{formatPackageRole(item.role)}</Badge>
+                                        {gallery.length ? (
+                                          <button
+                                            type="button"
+                                            className="relative size-10 overflow-hidden rounded border bg-muted/20"
+                                            onClick={() =>
+                                              openImageViewer(
+                                                gallery,
+                                                0,
+                                                product?.name ?? item.productId,
+                                                product?.productUrl,
+                                              )
+                                            }
+                                          >
+                                            <Image
+                                              src={gallery[0]}
+                                              alt={product?.name ?? item.productId}
+                                              fill
+                                              sizes="40px"
+                                              className="object-cover"
+                                              unoptimized
+                                            />
+                                          </button>
+                                        ) : null}
+                                        <span className="font-medium">{product?.name ?? item.productId}</span>
+                                        {product ? (
+                                          <span className="text-muted-foreground text-sm">
+                                            {product.price} {product.currency}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                              <div className="flex flex-col gap-2">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => setSelectedPackageMatch(match)}
+                                >
+                                  Detalii
+                                </Button>
                               </div>
                             </div>
-                            {match.scenario.explanationTemplate ? (
-                              <p className="pl-11 text-muted-foreground text-sm">
-                                {match.scenario.explanationTemplate}
-                              </p>
-                            ) : null}
-                            <div className="space-y-2 pl-11">
-                              {renderTagBadges("Nivel recomandat", match.product.tags.level ?? [], vocabMaps.level)}
-                              {renderTagBadges("Stil", match.product.tags.style ?? [], vocabMaps.style)}
-                              {renderTagBadges("Distanță", match.product.tags.distance ?? [], vocabMaps.distance)}
+                          </div>
+                        );
+                      })
+                    : sortedProductMatches.map((match, idx) => {
+                        const gallery = buildImageGallery(match.product);
+                        return (
+                          <div
+                            key={`${match.product.id}-${match.scenario.order}`}
+                            className="group relative rounded-lg border p-4 transition-all hover:shadow-md"
+                          >
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="flex-1 space-y-2">
+                                <div className="flex items-start gap-3">
+                                  <div className="flex flex-col gap-2">
+                                    <Badge variant="secondary">#{idx + 1}</Badge>
+                                    <Badge variant="outline">Potrivire {match.matchPercent}%</Badge>
+                                  </div>
+                                  {gallery.length ? (
+                                    <button
+                                      type="button"
+                                      className="relative size-14 overflow-hidden rounded-md border bg-muted/20"
+                                      onClick={() =>
+                                        openImageViewer(gallery, 0, match.product.name, match.product.productUrl)
+                                      }
+                                      title="Vezi pozele"
+                                    >
+                                      <Image
+                                        src={gallery[0]}
+                                        alt={match.product.name}
+                                        fill
+                                        sizes="56px"
+                                        className="object-cover"
+                                        unoptimized
+                                      />
+                                      {gallery.length > 1 ? (
+                                        <span className="absolute right-1 bottom-1 rounded bg-background/80 px-1 font-medium text-[10px]">
+                                          +{gallery.length - 1}
+                                        </span>
+                                      ) : null}
+                                    </button>
+                                  ) : null}
+                                  <div>
+                                    <h3 className="font-semibold text-lg">{match.product.name}</h3>
+                                    <p className="text-muted-foreground text-sm">
+                                      {match.product.price} {match.product.currency}
+                                    </p>
+                                    {match.product.productUrl ? (
+                                      <a
+                                        href={match.product.productUrl}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="text-primary text-sm underline-offset-4 hover:underline"
+                                        onClick={(event) => {
+                                          event.preventDefault();
+                                          void openProductUrl(match.product);
+                                        }}
+                                      >
+                                        Vezi produsul în magazin
+                                      </a>
+                                    ) : null}
+                                  </div>
+                                </div>
+                                {match.scenario.explanationTemplate ? (
+                                  <p className="pl-11 text-muted-foreground text-sm">
+                                    {match.scenario.explanationTemplate}
+                                  </p>
+                                ) : null}
+                                <div className="space-y-2 pl-11">
+                                  {renderTagBadges("Nivel recomandat", match.product.tags.level ?? [], vocabMaps.level)}
+                                  {renderTagBadges("Stil", match.product.tags.style ?? [], vocabMaps.style)}
+                                  {renderTagBadges("Distanță", match.product.tags.distance ?? [], vocabMaps.distance)}
+                                </div>
+                              </div>
+                              <div className="flex flex-col gap-2">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => setSelectedProductMatch(match)}
+                                >
+                                  Detalii
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant={favorites.includes(match.product.id) ? "default" : "outline"}
+                                  size="sm"
+                                  onClick={() => toggleFavorite(match.product.id)}
+                                >
+                                  <Heart
+                                    className="mr-1 size-4"
+                                    fill={favorites.includes(match.product.id) ? "currentColor" : "none"}
+                                  />
+                                  {favorites.includes(match.product.id) ? "Salvat" : "Salvează"}
+                                </Button>
+                              </div>
                             </div>
                           </div>
-                          <div className="flex flex-col gap-2">
-                            <Button type="button" variant="outline" size="sm" onClick={() => setSelectedMatch(match)}>
-                              Detalii
-                            </Button>
-                            <Button
-                              type="button"
-                              variant={favorites.includes(match.product.id) ? "default" : "outline"}
-                              size="sm"
-                              onClick={() => toggleFavorite(match.product.id)}
-                            >
-                              <Heart
-                                className="mr-1 size-4"
-                                fill={favorites.includes(match.product.id) ? "currentColor" : "none"}
-                              />
-                              {favorites.includes(match.product.id) ? "Salvat" : "Salvează"}
-                            </Button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
+                        );
+                      })}
                 </div>
               )}
 
@@ -1394,7 +1638,9 @@ export default function RecommendationTestPage() {
                           })}
                         </p>
                         <p className="text-muted-foreground text-xs">
-                          {session.matchProductIds.length} produse recomandate
+                          {session.resultMode === "packages"
+                            ? `${session.matchPackageIds.length} pachete recomandate`
+                            : `${session.matchProductIds.length} produse recomandate`}
                         </p>
                       </div>
                       <Button type="button" variant="outline" size="sm" onClick={() => openHistorySession(session)}>
@@ -1409,29 +1655,32 @@ export default function RecommendationTestPage() {
         </TabsContent>
       </Tabs>
 
-      <Dialog open={Boolean(selectedMatch)} onOpenChange={(open) => (!open ? setSelectedMatch(null) : null)}>
+      <Dialog
+        open={Boolean(selectedProductMatch)}
+        onOpenChange={(open) => (!open ? setSelectedProductMatch(null) : null)}
+      >
         <DialogContent className="sm:max-w-2xl">
           <DialogTitle>Detalii produs</DialogTitle>
-          {selectedMatch ? (
+          {selectedProductMatch ? (
             <div className="space-y-4">
               <div className="flex items-start gap-4">
-                {buildImageGallery(selectedMatch.product).length ? (
+                {buildImageGallery(selectedProductMatch.product).length ? (
                   <button
                     type="button"
                     className="relative size-20 overflow-hidden rounded-md border bg-muted/20"
                     onClick={() =>
                       openImageViewer(
-                        buildImageGallery(selectedMatch.product),
+                        buildImageGallery(selectedProductMatch.product),
                         0,
-                        selectedMatch.product.name,
-                        selectedMatch.product.productUrl,
+                        selectedProductMatch.product.name,
+                        selectedProductMatch.product.productUrl,
                       )
                     }
                     title="Vezi pozele"
                   >
                     <Image
-                      src={buildImageGallery(selectedMatch.product)[0]}
-                      alt={selectedMatch.product.name}
+                      src={buildImageGallery(selectedProductMatch.product)[0]}
+                      alt={selectedProductMatch.product.name}
                       fill
                       sizes="80px"
                       className="object-cover"
@@ -1440,23 +1689,23 @@ export default function RecommendationTestPage() {
                   </button>
                 ) : null}
                 <div className="space-y-2">
-                  <h3 className="font-bold text-2xl">{selectedMatch.product.name}</h3>
+                  <h3 className="font-bold text-2xl">{selectedProductMatch.product.name}</h3>
                   <div className="flex items-center gap-4 text-muted-foreground text-sm">
                     <span className="font-semibold text-foreground text-lg">
-                      {selectedMatch.product.price} {selectedMatch.product.currency}
+                      {selectedProductMatch.product.price} {selectedProductMatch.product.currency}
                     </span>
                     <Separator orientation="vertical" className="h-4" />
-                    <span>Potrivire: {selectedMatch.fitScore.toFixed(2)}</span>
+                    <span>Potrivire: {selectedProductMatch.fitScore.toFixed(2)}</span>
                   </div>
-                  {selectedMatch.product.productUrl ? (
+                  {selectedProductMatch.product.productUrl ? (
                     <a
-                      href={selectedMatch.product.productUrl}
+                      href={selectedProductMatch.product.productUrl}
                       target="_blank"
                       rel="noreferrer"
                       className="text-primary text-sm underline-offset-4 hover:underline"
                       onClick={(event) => {
                         event.preventDefault();
-                        void openProductUrl(selectedMatch.product);
+                        void openProductUrl(selectedProductMatch.product);
                       }}
                     >
                       Vezi produsul în magazin
@@ -1465,36 +1714,36 @@ export default function RecommendationTestPage() {
                 </div>
               </div>
 
-              {selectedMatch.scenario.explanationTemplate ? (
+              {selectedProductMatch.scenario.explanationTemplate ? (
                 <div className="rounded-lg bg-muted p-4">
                   <h4 className="mb-2 font-medium">De ce se potrivește?</h4>
-                  <p className="text-muted-foreground text-sm">{selectedMatch.scenario.explanationTemplate}</p>
+                  <p className="text-muted-foreground text-sm">{selectedProductMatch.scenario.explanationTemplate}</p>
                 </div>
               ) : null}
 
               <div className="space-y-3">
                 <h4 className="font-medium">Recomandat pentru</h4>
                 <div className="space-y-2">
-                  {renderTagBadges("Nivel", selectedMatch.product.tags.level ?? [], vocabMaps.level)}
-                  {renderTagBadges("Stil", selectedMatch.product.tags.style ?? [], vocabMaps.style)}
-                  {renderTagBadges("Distanță", selectedMatch.product.tags.distance ?? [], vocabMaps.distance)}
+                  {renderTagBadges("Nivel", selectedProductMatch.product.tags.level ?? [], vocabMaps.level)}
+                  {renderTagBadges("Stil", selectedProductMatch.product.tags.style ?? [], vocabMaps.style)}
+                  {renderTagBadges("Distanță", selectedProductMatch.product.tags.distance ?? [], vocabMaps.distance)}
                 </div>
               </div>
 
               <div className="space-y-2">
                 <h4 className="font-medium">Atribute produs (informativ)</h4>
                 <div className="flex flex-wrap gap-2">
-                  {selectedMatch.product.attributes.control !== undefined ? (
-                    <Badge variant="outline">Control: {selectedMatch.product.attributes.control}</Badge>
+                  {selectedProductMatch.product.attributes.control !== undefined ? (
+                    <Badge variant="outline">Control: {selectedProductMatch.product.attributes.control}</Badge>
                   ) : null}
-                  {selectedMatch.product.attributes.spin !== undefined ? (
-                    <Badge variant="outline">Spin: {selectedMatch.product.attributes.spin}</Badge>
+                  {selectedProductMatch.product.attributes.spin !== undefined ? (
+                    <Badge variant="outline">Spin: {selectedProductMatch.product.attributes.spin}</Badge>
                   ) : null}
-                  {selectedMatch.product.attributes.speed !== undefined ? (
-                    <Badge variant="outline">Viteză: {selectedMatch.product.attributes.speed}</Badge>
+                  {selectedProductMatch.product.attributes.speed !== undefined ? (
+                    <Badge variant="outline">Viteză: {selectedProductMatch.product.attributes.speed}</Badge>
                   ) : null}
-                  {selectedMatch.product.attributes.weight !== undefined ? (
-                    <Badge variant="outline">Greutate: {selectedMatch.product.attributes.weight}</Badge>
+                  {selectedProductMatch.product.attributes.weight !== undefined ? (
+                    <Badge variant="outline">Greutate: {selectedProductMatch.product.attributes.weight}</Badge>
                   ) : null}
                 </div>
               </div>
@@ -1517,18 +1766,105 @@ export default function RecommendationTestPage() {
               <Button
                 type="button"
                 className="w-full"
-                variant={favorites.includes(selectedMatch.product.id) ? "default" : "outline"}
+                variant={favorites.includes(selectedProductMatch.product.id) ? "default" : "outline"}
                 onClick={() => {
-                  toggleFavorite(selectedMatch.product.id);
-                  setSelectedMatch(null);
+                  toggleFavorite(selectedProductMatch.product.id);
+                  setSelectedProductMatch(null);
                 }}
               >
                 <Heart
                   className="mr-2 size-4"
-                  fill={favorites.includes(selectedMatch.product.id) ? "currentColor" : "none"}
+                  fill={favorites.includes(selectedProductMatch.product.id) ? "currentColor" : "none"}
                 />
-                {favorites.includes(selectedMatch.product.id) ? "Elimină din favorite" : "Adaugă la favorite"}
+                {favorites.includes(selectedProductMatch.product.id) ? "Elimină din favorite" : "Adaugă la favorite"}
               </Button>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(selectedPackageMatch)}
+        onOpenChange={(open) => (!open ? setSelectedPackageMatch(null) : null)}
+      >
+        <DialogContent className="sm:max-w-2xl">
+          <DialogTitle>Detalii pachet</DialogTitle>
+          {selectedPackageMatch ? (
+            <div className="space-y-4">
+              <div>
+                <h3 className="font-bold text-2xl">{selectedPackageMatch.package.title}</h3>
+                <p className="text-muted-foreground text-sm">
+                  {selectedPackageMatch.package.totalPrice} {selectedPackageMatch.package.currency} •{" "}
+                  {selectedPackageMatch.package.mode === "single"
+                    ? "single"
+                    : selectedPackageMatch.package.mode === "triple"
+                      ? "triple"
+                      : "custom"}
+                </p>
+              </div>
+
+              {selectedPackageMatch.scenario.explanationTemplate ? (
+                <div className="rounded-lg bg-muted p-4">
+                  <h4 className="mb-2 font-medium">De ce se potrivește?</h4>
+                  <p className="text-muted-foreground text-sm">{selectedPackageMatch.scenario.explanationTemplate}</p>
+                </div>
+              ) : null}
+
+              <div className="space-y-2">
+                <h4 className="font-medium">Componente pachet</h4>
+                <div className="space-y-2">
+                  {selectedPackageMatch.package.items.map((item, index) => {
+                    const product = productsById.get(item.productId);
+                    const gallery = product ? buildImageGallery(product) : [];
+                    return (
+                      <div
+                        key={`${selectedPackageMatch.package.id}-${index}-${item.productId}`}
+                        className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 p-2"
+                      >
+                        <Badge variant="outline">{formatPackageRole(item.role)}</Badge>
+                        {gallery.length ? (
+                          <button
+                            type="button"
+                            className="relative size-10 overflow-hidden rounded border bg-muted/20"
+                            onClick={() =>
+                              openImageViewer(gallery, 0, product?.name ?? item.productId, product?.productUrl)
+                            }
+                          >
+                            <Image
+                              src={gallery[0]}
+                              alt={product?.name ?? item.productId}
+                              fill
+                              sizes="40px"
+                              className="object-cover"
+                              unoptimized
+                            />
+                          </button>
+                        ) : null}
+                        <span className="font-medium">{product?.name ?? item.productId}</span>
+                        {product ? (
+                          <span className="text-muted-foreground text-sm">
+                            {product.price} {product.currency}
+                          </span>
+                        ) : null}
+                        {product?.productUrl ? (
+                          <a
+                            href={product.productUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-primary text-sm underline-offset-4 hover:underline"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              void openProductUrl(product);
+                            }}
+                          >
+                            Vezi produsul
+                          </a>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           ) : null}
         </DialogContent>

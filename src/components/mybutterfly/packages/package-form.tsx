@@ -1,0 +1,858 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+
+import { zodResolver } from "@hookform/resolvers/zod";
+import { Plus, Trash2 } from "lucide-react";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+
+import { VocabularyMultiSelect } from "@/components/mybutterfly/forms/vocabulary-multi-select";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { InfoTip } from "@/components/ui/info-tip";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
+import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
+import type {
+  PackageItemRole,
+  PackageMode,
+  Product,
+  ProductRecommendationScenario,
+  RecommendationPackage,
+  RecommendationPackageItem,
+  WithId,
+} from "@/lib/firestore/types";
+import { listVocabularyKeys, type VocabularyCategory } from "@/lib/firestore/vocabulary";
+
+const MAX_CUSTOM_ITEMS = 10;
+const ROLE_NONE = "__none__";
+
+type PackageFormValues = {
+  active: boolean;
+  title: string;
+  description: string;
+  mode: PackageMode;
+  singleProductId: string;
+  bladeProductId: string;
+  rubberFhProductId: string;
+  rubberBhProductId: string;
+};
+
+const formSchema = z.object({
+  active: z.boolean(),
+  title: z.string().min(1, "Titlul este obligatoriu."),
+  description: z.string().optional(),
+  mode: z.enum(["single", "triple", "custom"]),
+  singleProductId: z.string().optional(),
+  bladeProductId: z.string().optional(),
+  rubberFhProductId: z.string().optional(),
+  rubberBhProductId: z.string().optional(),
+});
+
+type CustomItemDraft = {
+  id: string;
+  productId: string;
+  role?: PackageItemRole;
+};
+
+type ScenarioDraft = {
+  id: string;
+  active: boolean;
+  order: number;
+  explanationTemplate: string;
+  conditions: Record<string, string[]>;
+};
+
+type PackageFormPayload = Omit<RecommendationPackage, "createdAt" | "updatedAt" | "totalPrice" | "currency">;
+
+type PackageFormProps = {
+  products: WithId<Product>[];
+  initialValues?: RecommendationPackage;
+  defaultMode?: PackageMode;
+  onSubmit: (values: PackageFormPayload) => Promise<void>;
+  onCancel?: () => void;
+};
+
+const generateClientId = () => {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+};
+
+const createEmptyCustomItem = (): CustomItemDraft => ({
+  id: generateClientId(),
+  productId: "",
+});
+
+const normalizeConditionValues = (value: unknown) => {
+  if (Array.isArray(value)) return value.filter((item) => typeof item === "string" && item.trim());
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  return [];
+};
+
+const buildConditionMap = (keys: string[], source: ProductRecommendationScenario["conditions"] | undefined) => {
+  const result: Record<string, string[]> = {};
+  keys.forEach((key) => {
+    const value = source?.[key];
+    result[key] = normalizeConditionValues(value);
+  });
+  if (source) {
+    Object.entries(source).forEach(([key, value]) => {
+      if (key in result) return;
+      const normalized = normalizeConditionValues(value);
+      if (normalized.length) result[key] = normalized;
+    });
+  }
+  return result;
+};
+
+const buildConditions = (scenario: ScenarioDraft): ProductRecommendationScenario["conditions"] =>
+  Object.fromEntries(
+    Object.entries(scenario.conditions).filter(([, values]) => Array.isArray(values) && values.length > 0),
+  );
+
+const formatScenarioSummary = (
+  scenario: ScenarioDraft,
+  categories: Array<Pick<VocabularyCategory, "key" | "title">>,
+) => {
+  const parts: string[] = [];
+  const knownKeys = new Set(categories.map((category) => category.key));
+  categories.forEach((category) => {
+    const values = scenario.conditions[category.key] ?? [];
+    if (values.length) parts.push(`${category.title}: ${values.length}`);
+  });
+  Object.entries(scenario.conditions).forEach(([key, values]) => {
+    if (knownKeys.has(key)) return;
+    if (values.length) parts.push(`${key}: ${values.length}`);
+  });
+  if (scenario.explanationTemplate.trim()) {
+    parts.push("Are explicație");
+  }
+  return parts.length ? parts.join(" • ") : "Fără condiții setate";
+};
+
+const toRoleMap = (items: RecommendationPackageItem[] | undefined) => {
+  const next: Partial<Record<PackageItemRole, string>> = {};
+  (items ?? []).forEach((item) => {
+    if (item.role) next[item.role] = item.productId;
+  });
+  return next;
+};
+
+const toCustomDrafts = (items: RecommendationPackageItem[] | undefined): CustomItemDraft[] =>
+  (items ?? []).map((item) => ({
+    id: generateClientId(),
+    productId: item.productId,
+    role: item.role,
+  }));
+
+const formatRole = (role?: PackageItemRole) => {
+  if (role === "single") return "Produs";
+  if (role === "blade") return "Lemn";
+  if (role === "rubber_fh") return "Față FH";
+  if (role === "rubber_bh") return "Față BH";
+  return "Fără rol";
+};
+
+export function PackageForm({ products, initialValues, defaultMode, onSubmit, onCancel }: PackageFormProps) {
+  const initialMode = initialValues?.mode ?? defaultMode ?? "single";
+  const roleMap = toRoleMap(initialValues?.items);
+  const form = useForm<PackageFormValues>({
+    resolver: zodResolver(formSchema),
+    defaultValues: {
+      active: initialValues?.active ?? true,
+      title: initialValues?.title ?? "",
+      description: initialValues?.description ?? "",
+      mode: initialMode,
+      singleProductId: roleMap.single ?? "",
+      bladeProductId: roleMap.blade ?? "",
+      rubberFhProductId: roleMap.rubber_fh ?? "",
+      rubberBhProductId: roleMap.rubber_bh ?? "",
+    },
+  });
+
+  const [customItems, setCustomItems] = useState<CustomItemDraft[]>(() => {
+    if (initialValues?.mode === "custom") {
+      return toCustomDrafts(initialValues.items);
+    }
+    if (initialMode === "custom") {
+      return [createEmptyCustomItem()];
+    }
+    return [];
+  });
+  const [formError, setFormError] = useState<string | null>(null);
+  const [vocabularyCategories, setVocabularyCategories] = useState<WithId<VocabularyCategory>[]>([]);
+  const [vocabularyError, setVocabularyError] = useState<string | null>(null);
+  const [scenarios, setScenarios] = useState<ScenarioDraft[]>([]);
+  const [isScenarioDialogOpen, setIsScenarioDialogOpen] = useState(false);
+  const [editingScenarioIndex, setEditingScenarioIndex] = useState<number | null>(null);
+  const [scenarioDialogMode, setScenarioDialogMode] = useState<"add" | "edit">("edit");
+
+  const sortedVocabularyCategories = useMemo(
+    () => vocabularyCategories.slice().sort((a, b) => a.order - b.order),
+    [vocabularyCategories],
+  );
+  const vocabularyKeys = useMemo(
+    () => sortedVocabularyCategories.map((category) => category.key),
+    [sortedVocabularyCategories],
+  );
+
+  useEffect(() => {
+    listVocabularyKeys({ includeInactive: true })
+      .then((items) => {
+        setVocabularyCategories(items);
+        setVocabularyError(null);
+      })
+      .catch((err) => {
+        logFirebaseError("Packages: loadVocabularyKeys", err);
+        const info = getFirebaseErrorInfo(err);
+        setVocabularyError(info.message || "Nu pot încărca Vocabulary.");
+        setVocabularyCategories([]);
+      });
+  }, []);
+
+  useEffect(() => {
+    if (!initialValues) {
+      setScenarios([]);
+      return;
+    }
+    setScenarios(
+      (initialValues.recommendationScenarios ?? []).map((scenario) => ({
+        id: generateClientId(),
+        active: scenario.active,
+        order: scenario.order,
+        explanationTemplate: scenario.explanationTemplate ?? "",
+        conditions: buildConditionMap(vocabularyKeys, scenario.conditions),
+      })),
+    );
+  }, [initialValues, vocabularyKeys]);
+
+  const productsById = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
+  const productOptions = useMemo(
+    () =>
+      products
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((product) => ({
+          id: product.id,
+          label: `${product.name} — ${product.price} ${product.currency}${product.active ? "" : " (inactiv)"}`,
+        })),
+    [products],
+  );
+
+  const mode = form.watch("mode");
+  const selectedIds = form.watch(["singleProductId", "bladeProductId", "rubberFhProductId", "rubberBhProductId"]);
+  const selectedProductIds = useMemo(() => {
+    if (mode === "custom") {
+      return customItems.map((item) => item.productId.trim()).filter(Boolean);
+    }
+    const [singleProductId, bladeProductId, rubberFhProductId, rubberBhProductId] = selectedIds;
+    const ids =
+      mode === "single" ? [singleProductId] : [bladeProductId, rubberFhProductId, rubberBhProductId].filter(Boolean);
+    return ids.map((id) => id.trim()).filter(Boolean);
+  }, [customItems, mode, selectedIds]);
+  const selectedProducts = useMemo(
+    () => selectedProductIds.map((id) => productsById.get(id)).filter((item): item is WithId<Product> => Boolean(item)),
+    [productsById, selectedProductIds],
+  );
+  const duplicateProductIds = useMemo(
+    () =>
+      selectedProductIds.filter(
+        (productId, index, all) => all.indexOf(productId) !== index && productId.trim().length > 0,
+      ),
+    [selectedProductIds],
+  );
+  const totalPrice = useMemo(
+    () => Number(selectedProducts.reduce((sum, product) => sum + Number(product.price ?? 0), 0).toFixed(2)),
+    [selectedProducts],
+  );
+  const currencies = useMemo(
+    () => [...new Set(selectedProducts.map((product) => product.currency))],
+    [selectedProducts],
+  );
+  const currencyLabel = currencies.length === 1 ? currencies[0] : currencies.length > 1 ? "MIX" : "—";
+
+  const customHasEmptyProducts = mode === "custom" && customItems.some((item) => !item.productId.trim());
+  const customOutOfBounds = mode === "custom" && (customItems.length < 1 || customItems.length > MAX_CUSTOM_ITEMS);
+  const hasMissingRequiredProducts =
+    (mode === "single" && !selectedIds[0]?.trim()) ||
+    (mode === "triple" && (!selectedIds[1]?.trim() || !selectedIds[2]?.trim() || !selectedIds[3]?.trim())) ||
+    (mode === "custom" && customHasEmptyProducts);
+
+  const isSubmitting = form.formState.isSubmitting;
+  const isSubmitBlocked =
+    isSubmitting ||
+    currencies.length > 1 ||
+    duplicateProductIds.length > 0 ||
+    customOutOfBounds ||
+    hasMissingRequiredProducts;
+
+  useEffect(() => {
+    if (mode !== "custom") return;
+    if (customItems.length > 0) return;
+    setCustomItems([createEmptyCustomItem()]);
+  }, [customItems.length, mode]);
+
+  const addCustomItem = () => {
+    if (customItems.length >= MAX_CUSTOM_ITEMS) return;
+    setCustomItems((prev) => [...prev, createEmptyCustomItem()]);
+  };
+
+  const removeCustomItem = (itemId: string) => {
+    setCustomItems((prev) => prev.filter((item) => item.id !== itemId));
+  };
+
+  const updateCustomItem = (itemId: string, patch: Partial<CustomItemDraft>) => {
+    setCustomItems((prev) => prev.map((item) => (item.id === itemId ? { ...item, ...patch } : item)));
+  };
+
+  const updateScenario = (index: number, patch: Partial<ScenarioDraft>) => {
+    setScenarios((prev) => prev.map((item, idx) => (idx === index ? { ...item, ...patch } : item)));
+  };
+
+  const openScenarioDialog = (index: number) => {
+    setEditingScenarioIndex(index);
+    setScenarioDialogMode("edit");
+    setIsScenarioDialogOpen(true);
+  };
+
+  const handleAddScenario = () => {
+    const nextOrder = scenarios.length ? Math.max(...scenarios.map((scenario) => scenario.order)) + 1 : 0;
+    const nextScenario: ScenarioDraft = {
+      id: generateClientId(),
+      active: true,
+      order: nextOrder,
+      explanationTemplate: "",
+      conditions: buildConditionMap(vocabularyKeys, {}),
+    };
+    setScenarios((prev) => [...prev, nextScenario]);
+    setEditingScenarioIndex(scenarios.length);
+    setScenarioDialogMode("add");
+    setIsScenarioDialogOpen(true);
+  };
+
+  const handleDeleteScenario = (index: number) => {
+    setScenarios((prev) => prev.filter((_, idx) => idx !== index));
+    if (editingScenarioIndex === index) {
+      setIsScenarioDialogOpen(false);
+      setEditingScenarioIndex(null);
+    }
+  };
+
+  const submit = async (values: PackageFormValues) => {
+    let modeItems: RecommendationPackageItem[] = [];
+    if (values.mode === "single") {
+      modeItems = [{ role: "single", productId: values.singleProductId.trim() }];
+    } else if (values.mode === "triple") {
+      modeItems = [
+        { role: "blade", productId: values.bladeProductId.trim() },
+        { role: "rubber_fh", productId: values.rubberFhProductId.trim() },
+        { role: "rubber_bh", productId: values.rubberBhProductId.trim() },
+      ];
+    } else {
+      const trimmedItems = customItems.map((item) => ({
+        productId: item.productId.trim(),
+        ...(item.role ? { role: item.role } : {}),
+      }));
+      if (trimmedItems.length < 1) {
+        setFormError("Pachetul custom trebuie să conțină cel puțin un produs.");
+        return;
+      }
+      if (trimmedItems.length > MAX_CUSTOM_ITEMS) {
+        setFormError(`Pachetul custom poate conține maxim ${MAX_CUSTOM_ITEMS} produse.`);
+        return;
+      }
+      if (trimmedItems.some((item) => !item.productId)) {
+        setFormError("Completează produsul pentru fiecare item din pachet.");
+        return;
+      }
+      const duplicates = trimmedItems
+        .map((item) => item.productId)
+        .filter((productId, index, all) => all.indexOf(productId) !== index);
+      if (duplicates.length > 0) {
+        setFormError("Același produs nu poate apărea de mai multe ori în același pachet.");
+        return;
+      }
+      modeItems = trimmedItems;
+    }
+
+    if (modeItems.some((item) => !item.productId)) {
+      setFormError("Completează toate produsele necesare pentru modul selectat.");
+      return;
+    }
+    if (duplicateProductIds.length > 0) {
+      setFormError("Același produs nu poate apărea de mai multe ori în același pachet.");
+      return;
+    }
+    if (currencies.length > 1) {
+      setFormError("Produsele selectate au monede diferite. Pachetul nu poate fi salvat.");
+      return;
+    }
+
+    const payload: PackageFormPayload = {
+      active: values.active,
+      title: values.title.trim(),
+      ...(values.description?.trim() ? { description: values.description.trim() } : {}),
+      mode: values.mode,
+      items: modeItems,
+      recommendationScenarios: scenarios.map((scenario) => ({
+        active: scenario.active,
+        order: scenario.order,
+        explanationTemplate: scenario.explanationTemplate.trim(),
+        conditions: buildConditions(scenario),
+      })),
+    };
+    try {
+      setFormError(null);
+      await onSubmit(payload);
+    } catch (err) {
+      logFirebaseError("Packages: save", err);
+      const info = getFirebaseErrorInfo(err);
+      setFormError(info.message || "Salvarea pachetului a eșuat.");
+    }
+  };
+
+  return (
+    <Form {...form}>
+      <form className="space-y-6" onSubmit={form.handleSubmit(submit)}>
+        {formError ? (
+          <div className="rounded-md border bg-muted p-3 text-sm">
+            <div className="font-semibold">Eroare</div>
+            <div className="text-muted-foreground">{formError}</div>
+          </div>
+        ) : null}
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <FormField
+            control={form.control}
+            name="active"
+            render={({ field }) => (
+              <FormItem className="flex items-center justify-between rounded-md border p-3 md:col-span-2">
+                <div>
+                  <FormLabel>Pachet activ</FormLabel>
+                  <div className="text-muted-foreground text-xs">Doar pachetele active intră în matching.</div>
+                </div>
+                <FormControl>
+                  <Switch checked={field.value} onCheckedChange={field.onChange} />
+                </FormControl>
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="title"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Titlu pachet</FormLabel>
+                <FormControl>
+                  <Input placeholder="Ex: Set ofensiv all-round" {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="mode"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Mod pachet</FormLabel>
+                <Select value={field.value} onValueChange={(value) => field.onChange(value as PackageMode)}>
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    <SelectItem value="custom">Custom (1..N produse)</SelectItem>
+                    <SelectItem value="single">Single (1 produs)</SelectItem>
+                    <SelectItem value="triple">Triple (lemn + 2 fețe)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="description"
+            render={({ field }) => (
+              <FormItem className="md:col-span-2">
+                <FormLabel>Descriere (opțional)</FormLabel>
+                <FormControl>
+                  <Textarea rows={3} placeholder="Detalii interne pentru admin..." {...field} />
+                </FormControl>
+              </FormItem>
+            )}
+          />
+        </div>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Componente pachet</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {mode === "single" ? (
+              <FormField
+                control={form.control}
+                name="singleProductId"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Produs</FormLabel>
+                    <Select value={field.value || undefined} onValueChange={field.onChange}>
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Selectează produsul" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        {productOptions.map((option) => (
+                          <SelectItem key={option.id} value={option.id}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </FormItem>
+                )}
+              />
+            ) : null}
+
+            {mode === "triple" ? (
+              <div className="grid gap-4 md:grid-cols-3">
+                <FormField
+                  control={form.control}
+                  name="bladeProductId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Lemn (blade)</FormLabel>
+                      <Select value={field.value || undefined} onValueChange={field.onChange}>
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selectează lemnul" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {productOptions.map((option) => (
+                            <SelectItem key={option.id} value={option.id}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="rubberFhProductId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Față forehand (rubber_fh)</FormLabel>
+                      <Select value={field.value || undefined} onValueChange={field.onChange}>
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selectează fața FH" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {productOptions.map((option) => (
+                            <SelectItem key={option.id} value={option.id}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="rubberBhProductId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Față backhand (rubber_bh)</FormLabel>
+                      <Select value={field.value || undefined} onValueChange={field.onChange}>
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selectează fața BH" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {productOptions.map((option) => (
+                            <SelectItem key={option.id} value={option.id}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </FormItem>
+                  )}
+                />
+              </div>
+            ) : null}
+
+            {mode === "custom" ? (
+              <div className="space-y-3">
+                <div className="text-muted-foreground text-sm">
+                  Adaugă între 1 și {MAX_CUSTOM_ITEMS} produse. Rolul este opțional.
+                </div>
+                {customItems.map((item, index) => (
+                  <div key={item.id} className="rounded-md border p-3">
+                    <div className="mb-2 font-medium text-sm">Item {index + 1}</div>
+                    <div className="grid gap-3 md:grid-cols-12">
+                      <div className="md:col-span-7">
+                        <FormLabel>Produs</FormLabel>
+                        <Select
+                          value={item.productId || undefined}
+                          onValueChange={(value) => updateCustomItem(item.id, { productId: value })}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selectează produsul" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {productOptions.map((option) => (
+                              <SelectItem key={option.id} value={option.id}>
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="md:col-span-4">
+                        <FormLabel>Rol (opțional)</FormLabel>
+                        <Select
+                          value={item.role ?? ROLE_NONE}
+                          onValueChange={(value) =>
+                            updateCustomItem(item.id, {
+                              role: value === ROLE_NONE ? undefined : (value as PackageItemRole),
+                            })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value={ROLE_NONE}>Fără rol</SelectItem>
+                            <SelectItem value="single">{formatRole("single")}</SelectItem>
+                            <SelectItem value="blade">{formatRole("blade")}</SelectItem>
+                            <SelectItem value="rubber_fh">{formatRole("rubber_fh")}</SelectItem>
+                            <SelectItem value="rubber_bh">{formatRole("rubber_bh")}</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="flex items-end md:col-span-1">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          onClick={() => removeCustomItem(item.id)}
+                          disabled={customItems.length <= 1}
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={addCustomItem}
+                    disabled={customItems.length >= MAX_CUSTOM_ITEMS}
+                  >
+                    <Plus className="mr-2 size-4" />
+                    Adaugă produs
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="grid gap-3 rounded-md border bg-muted/40 p-3 md:grid-cols-2">
+              <div>
+                <div className="text-muted-foreground text-xs">Preț total (calculat)</div>
+                <div className="font-semibold text-lg">{totalPrice.toFixed(2)}</div>
+              </div>
+              <div>
+                <div className="text-muted-foreground text-xs">Monedă</div>
+                <div className="font-semibold text-lg">{currencyLabel}</div>
+              </div>
+              {currencies.length > 1 ? (
+                <div className="text-destructive text-xs md:col-span-2">
+                  Produsele selectate au monede diferite. Salvarea este blocată.
+                </div>
+              ) : null}
+              {duplicateProductIds.length > 0 ? (
+                <div className="text-destructive text-xs md:col-span-2">
+                  Același produs nu poate apărea de mai multe ori în același pachet.
+                </div>
+              ) : null}
+              {customOutOfBounds ? (
+                <div className="text-destructive text-xs md:col-span-2">
+                  Pachetul custom trebuie să conțină între 1 și {MAX_CUSTOM_ITEMS} produse.
+                </div>
+              ) : null}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Scenarii recomandare</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="text-muted-foreground text-sm">
+              Definește condițiile de recomandare direct în pachet. Matching-ul folosește aceste scenarii.
+            </div>
+            {scenarios.length === 0 ? (
+              <div className="text-muted-foreground text-sm">Nu există scenarii încă.</div>
+            ) : (
+              <div className="space-y-3">
+                {scenarios.map((scenario, index) => (
+                  <div key={scenario.id} className="rounded-md border p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-medium">Scenariu {index + 1}</div>
+                        <div className="text-muted-foreground text-xs">
+                          {formatScenarioSummary(scenario, sortedVocabularyCategories)}
+                        </div>
+                        <div className="text-muted-foreground text-xs">
+                          {scenario.active ? "Activ" : "Inactiv"} • order: {scenario.order}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button type="button" variant="outline" size="sm" onClick={() => openScenarioDialog(index)}>
+                          Editează
+                        </Button>
+                        <Button type="button" variant="outline" size="sm" onClick={() => handleDeleteScenario(index)}>
+                          Șterge
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex justify-end">
+              <Button type="button" variant="outline" onClick={handleAddScenario} disabled={isSubmitting}>
+                <Plus className="mr-2 size-4" />
+                Adaugă scenariu
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Dialog
+          open={isScenarioDialogOpen}
+          onOpenChange={(open) => {
+            setIsScenarioDialogOpen(open);
+            if (!open) setEditingScenarioIndex(null);
+          }}
+        >
+          <DialogContent className="sm:max-w-3xl">
+            <DialogTitle>Editează scenariu</DialogTitle>
+            {editingScenarioIndex !== null ? (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-muted-foreground text-sm">Scenariu {editingScenarioIndex + 1}</div>
+                  <Switch
+                    checked={scenarios[editingScenarioIndex]?.active ?? false}
+                    onCheckedChange={(checked) => updateScenario(editingScenarioIndex, { active: checked })}
+                  />
+                </div>
+
+                {vocabularyError ? <div className="text-destructive text-sm">{vocabularyError}</div> : null}
+                {sortedVocabularyCategories.length === 0 ? (
+                  <div className="text-muted-foreground text-sm">Nu există categorii în Vocabulary.</div>
+                ) : (
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {sortedVocabularyCategories.map((category) => {
+                      const label = category.active ? category.title : `${category.title} (inactiv)`;
+                      const tip =
+                        category.description?.trim() ||
+                        `Alege valorile care fac pachetul potrivit pentru ${category.title.toLowerCase()}.`;
+                      return (
+                        <div key={category.key} className="space-y-2">
+                          <FormLabel className="flex items-center gap-2">
+                            <InfoTip text={tip} />
+                            {label}
+                          </FormLabel>
+                          <VocabularyMultiSelect
+                            vocabKey={category.key}
+                            value={scenarios[editingScenarioIndex]?.conditions[category.key] ?? []}
+                            onChange={(value) =>
+                              updateScenario(editingScenarioIndex, {
+                                conditions: { ...scenarios[editingScenarioIndex].conditions, [category.key]: value },
+                              })
+                            }
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div className="grid gap-4 md:grid-cols-3">
+                  <div>
+                    <FormLabel className="flex items-center gap-2">
+                      <InfoTip text="Mai mic = scenariul este verificat mai devreme." />
+                      Ordine
+                    </FormLabel>
+                    <Input
+                      type="number"
+                      value={scenarios[editingScenarioIndex]?.order ?? 0}
+                      onChange={(event) =>
+                        updateScenario(editingScenarioIndex, { order: Number(event.target.value || 0) })
+                      }
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <FormLabel className="flex items-center gap-2">
+                    <InfoTip text="Textul afișat ca explicație pentru recomandare (opțional)." />
+                    Explicație
+                  </FormLabel>
+                  <Textarea
+                    rows={3}
+                    value={scenarios[editingScenarioIndex]?.explanationTemplate ?? ""}
+                    onChange={(event) =>
+                      updateScenario(editingScenarioIndex, { explanationTemplate: event.target.value })
+                    }
+                  />
+                </div>
+
+                <div className="flex justify-end">
+                  <Button type="button" onClick={() => setIsScenarioDialogOpen(false)}>
+                    {scenarioDialogMode === "edit" ? "Editează scenariul" : "Gata"}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </DialogContent>
+        </Dialog>
+
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {onCancel ? (
+            <Button type="button" variant="outline" onClick={onCancel} disabled={isSubmitting}>
+              Renunță
+            </Button>
+          ) : null}
+          <Button type="submit" disabled={isSubmitBlocked}>
+            {isSubmitting ? "Se salvează..." : "Salvează pachetul"}
+          </Button>
+        </div>
+      </form>
+    </Form>
+  );
+}

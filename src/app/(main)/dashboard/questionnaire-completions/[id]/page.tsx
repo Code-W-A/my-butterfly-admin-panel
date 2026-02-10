@@ -11,13 +11,25 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
-import { getQuestionnaireCompletionById, setQuestionnaireCompletionMatchProductIds } from "@/lib/firestore/completions";
+import {
+  getQuestionnaireCompletionById,
+  setQuestionnaireCompletionMatchPackageIds,
+  setQuestionnaireCompletionMatchProductIds,
+} from "@/lib/firestore/completions";
+import { getPackagesByIds, listPackages } from "@/lib/firestore/packages";
 import { getProductsByIds, listProducts } from "@/lib/firestore/products";
 import { listQuestions } from "@/lib/firestore/questions";
 import { getRecommendationSettings } from "@/lib/firestore/settings";
-import type { Product, QuestionnaireCompletion, QuestionnaireQuestion, WithId } from "@/lib/firestore/types";
+import type {
+  Product,
+  QuestionnaireCompletion,
+  QuestionnaireQuestion,
+  RecommendationPackage,
+  WithId,
+} from "@/lib/firestore/types";
 import { listVocabularyKeys, listVocabularyOptions } from "@/lib/firestore/vocabulary";
 import { matchProductScenarios, type RecommendationInput } from "@/lib/recommendations/match";
+import { matchPackageScenarios } from "@/lib/recommendations/match-packages";
 
 type CompletionItem = WithId<QuestionnaireCompletion>;
 
@@ -28,6 +40,14 @@ const buildImageGallery = (product: Product) => {
     .map((item) => item.trim())
     .filter(Boolean);
   return Array.from(new Set(images));
+};
+
+const formatPackageRole = (role?: string) => {
+  if (role === "single") return "Produs";
+  if (role === "blade") return "Lemn";
+  if (role === "rubber_fh") return "Față FH";
+  if (role === "rubber_bh") return "Față BH";
+  return "Produs";
 };
 
 const formatAnswer = (
@@ -158,6 +178,9 @@ export default function QuestionnaireCompletionDetailPage() {
   const [questions, setQuestions] = useState<WithId<QuestionnaireQuestion>[]>([]);
   const [products, setProducts] = useState<WithId<Product>[]>([]);
   const [computedProducts, setComputedProducts] = useState<WithId<Product>[]>([]);
+  const [packages, setPackages] = useState<WithId<RecommendationPackage>[]>([]);
+  const [computedPackages, setComputedPackages] = useState<WithId<RecommendationPackage>[]>([]);
+  const [packageProducts, setPackageProducts] = useState<WithId<Product>[]>([]);
   const [vocabMaps, setVocabMaps] = useState<Record<string, Record<string, string>>>({
     level: {},
     style: {},
@@ -190,28 +213,81 @@ export default function QuestionnaireCompletionDetailPage() {
           setCompletion(null);
           setQuestions([]);
           setProducts([]);
+          setPackages([]);
+          setPackageProducts([]);
           setIsLoading(false);
           return;
         }
-        const [questionsData, productsData] = await Promise.all([
-          listQuestions(completionData.questionnaireId),
-          getProductsByIds(completionData.matchProductIds ?? []),
-        ]);
+        const questionsData = await listQuestions(completionData.questionnaireId);
         setCompletion(completionData);
         setQuestions(questionsData);
-        setProducts(productsData);
+        setProducts([]);
+        setPackages([]);
+        setPackageProducts([]);
         setComputedProducts([]);
-        if (!completionData.matchProductIds?.length) {
+        setComputedPackages([]);
+
+        if (completionData.matchPackageIds?.length) {
+          const storedPackages = await getPackagesByIds(completionData.matchPackageIds);
+          setPackages(storedPackages);
+          const packageProductIds = Array.from(
+            new Set(storedPackages.flatMap((item) => item.items.map((entry) => entry.productId))),
+          );
+          if (packageProductIds.length) {
+            const packageProductsData = await getProductsByIds(packageProductIds);
+            setPackageProducts(packageProductsData);
+          }
+        } else if (completionData.matchProductIds?.length) {
+          const productsData = await getProductsByIds(completionData.matchProductIds);
+          setProducts(productsData);
+        } else {
           const activeProducts = await listProducts({ activeOnly: true });
+          const activePackages = await listPackages({ activeOnly: true });
           const input = buildRecommendationInput(questionsData, completionData.answers ?? {});
-          const matches = matchProductScenarios({ products: activeProducts, input, minMatchPercent });
-          const matchIds = matches.map((match) => match.product.id);
-          const uniqueProducts = matches.map((match) => match.product);
-          setComputedProducts(uniqueProducts);
-          if (matchIds.length) {
-            setQuestionnaireCompletionMatchProductIds(completionId, matchIds).catch(() => {
+          const askedKeys = completionData.askedQuestionIds
+            ? completionData.askedQuestionIds
+                .map((id) => questionsData.find((question) => question.id === id)?.key)
+                .filter((key): key is string => Boolean(key))
+            : undefined;
+          const productsById = new Map(activeProducts.map((item) => [item.id, item]));
+          const packageMatches = matchPackageScenarios({
+            packages: activePackages,
+            productsById,
+            input,
+            minMatchPercent,
+            askedKeys,
+          });
+
+          if (packageMatches.length) {
+            const matchIds = packageMatches.map((match) => match.package.id);
+            const uniquePackages = packageMatches.map((match) => match.package);
+            const packageProductIds = Array.from(
+              new Set(uniquePackages.flatMap((item) => item.items.map((entry) => entry.productId))),
+            );
+            setComputedPackages(uniquePackages);
+            setPackageProducts(
+              packageProductIds
+                .map((id) => productsById.get(id))
+                .filter((item): item is WithId<Product> => Boolean(item)),
+            );
+            setQuestionnaireCompletionMatchPackageIds(completionId, matchIds).catch(() => {
               // ignore update errors
             });
+          } else {
+            const productMatches = matchProductScenarios({
+              products: activeProducts,
+              input,
+              minMatchPercent,
+              askedKeys,
+            });
+            const matchIds = productMatches.map((match) => match.product.id);
+            const uniqueProducts = productMatches.map((match) => match.product);
+            setComputedProducts(uniqueProducts);
+            if (matchIds.length) {
+              setQuestionnaireCompletionMatchProductIds(completionId, matchIds).catch(() => {
+                // ignore update errors
+              });
+            }
           }
         }
         setIsLoading(false);
@@ -304,6 +380,11 @@ export default function QuestionnaireCompletionDetailPage() {
   const skippedList = useMemo(() => answersList.filter((entry) => entry.status === "skipped"), [answersList]);
 
   const displayedProducts = products.length ? products : computedProducts;
+  const displayedPackages = packages.length ? packages : computedPackages;
+  const packageProductsById = useMemo(
+    () => new Map(packageProducts.map((product) => [product.id, product])),
+    [packageProducts],
+  );
 
   const matchPercentById = useMemo(() => {
     if (!completion || displayedProducts.length === 0 || questions.length === 0) return new Map<string, number>();
@@ -316,6 +397,27 @@ export default function QuestionnaireCompletionDetailPage() {
     const matches = matchProductScenarios({ products: displayedProducts, input, minMatchPercent, askedKeys });
     return new Map(matches.map((match) => [match.product.id, match.matchPercent]));
   }, [completion, displayedProducts, minMatchPercent, questions]);
+  const packageMatchPercentById = useMemo(() => {
+    if (!completion || displayedPackages.length === 0 || questions.length === 0) return new Map<string, number>();
+    const input = buildRecommendationInput(questions, completion.answers ?? {});
+    const askedKeys = completion.askedQuestionIds
+      ? completion.askedQuestionIds
+          .map((id) => questions.find((q) => q.id === id)?.key)
+          .filter((key): key is string => Boolean(key))
+      : undefined;
+    const productPool = new Map([
+      ...displayedProducts.map((product) => [product.id, product] as const),
+      ...packageProducts.map((product) => [product.id, product] as const),
+    ]);
+    const matches = matchPackageScenarios({
+      packages: displayedPackages,
+      productsById: productPool,
+      input,
+      minMatchPercent,
+      askedKeys,
+    });
+    return new Map(matches.map((match) => [match.package.id, match.matchPercent]));
+  }, [completion, displayedPackages, displayedProducts, minMatchPercent, packageProducts, questions]);
 
   const formatSkippedReason = (reason?: string) => {
     if (reason === "inactive") return "Întrebare inactivă";
@@ -469,8 +571,74 @@ export default function QuestionnaireCompletionDetailPage() {
           <CardTitle>Recomandări</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          {displayedProducts.length === 0 ? (
-            <div className="text-muted-foreground text-sm">Nu există produse recomandate salvate.</div>
+          {displayedPackages.length > 0 ? (
+            <div className="space-y-4">
+              {displayedPackages.map((item, idx) => {
+                const matchPercent = packageMatchPercentById.get(item.id);
+                return (
+                  <div key={item.id} className="group relative rounded-lg border p-4 transition-all hover:shadow-md">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex-1 space-y-2">
+                        <div className="flex items-start gap-3">
+                          <div className="flex flex-col gap-2">
+                            <Badge variant="secondary">#{idx + 1}</Badge>
+                            {matchPercent !== undefined ? (
+                              <Badge variant="outline">Potrivire {matchPercent}%</Badge>
+                            ) : null}
+                          </div>
+                          <div>
+                            <h3 className="font-semibold text-lg">{item.title}</h3>
+                            <p className="text-muted-foreground text-sm">
+                              {item.totalPrice} {item.currency} •{" "}
+                              {item.mode === "single" ? "single" : item.mode === "triple" ? "triple" : "custom"}
+                            </p>
+                            {item.description ? (
+                              <p className="mt-1 text-muted-foreground text-sm">{item.description}</p>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="space-y-2 pl-11">
+                          {item.items.map((entry, index) => {
+                            const product = packageProductsById.get(entry.productId);
+                            return (
+                              <div
+                                key={`${item.id}-${index}-${entry.productId}`}
+                                className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-2 py-1 text-sm"
+                              >
+                                <Badge variant="outline">{formatPackageRole(entry.role)}</Badge>
+                                <span className="font-medium">{product?.name ?? entry.productId}</span>
+                                {product ? (
+                                  <span className="text-muted-foreground">
+                                    {product.price} {product.currency}
+                                  </span>
+                                ) : null}
+                                {product?.productUrl ? (
+                                  <a
+                                    href={product.productUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-primary text-sm underline-offset-4 hover:underline"
+                                  >
+                                    Vezi produsul în magazin
+                                  </a>
+                                ) : null}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <Button asChild type="button" variant="outline" size="sm">
+                          <Link href={`/dashboard/packages/${item.id}`}>Detalii</Link>
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : displayedProducts.length === 0 ? (
+            <div className="text-muted-foreground text-sm">Nu există recomandări salvate.</div>
           ) : (
             <div className="space-y-4">
               {displayedProducts.map((product, idx) => {

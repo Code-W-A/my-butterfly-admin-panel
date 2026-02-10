@@ -71,6 +71,28 @@ export type ProductRecommendationScenario = {
   explanationTemplate: string;
 };
 
+export type PackageMode = "single" | "triple" | "custom";
+
+export type PackageItemRole = "single" | "blade" | "rubber_fh" | "rubber_bh";
+
+export type RecommendationPackageItem = {
+  role?: PackageItemRole;
+  productId: string;
+};
+
+export type RecommendationPackage = {
+  active: boolean;
+  title: string;
+  description?: string;
+  mode: PackageMode;
+  items: RecommendationPackageItem[];
+  totalPrice: number;
+  currency: "EUR" | "RON";
+  recommendationScenarios?: ProductRecommendationScenario[];
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+};
+
 export type RecommendationRuleSet = {
   title: string;
   scenario: ProductRecommendationScenario;
@@ -89,6 +111,7 @@ export type UserProfile = {
 export type SpecialistRequestReply = {
   message: string;
   recommendedProductIds?: string[];
+  recommendedPackageIds?: string[];
   sentAt?: Timestamp;
 };
 
@@ -106,6 +129,7 @@ export type SpecialistRequest = {
   note?: string;
   contact?: SpecialistRequestContact;
   matchProductIds?: string[];
+  matchPackageIds?: string[];
   askedQuestionIds?: string[];
   skippedQuestions?: QuestionnaireCompletionSkipped[];
   source?: "recommendation_test";
@@ -137,6 +161,7 @@ export type QuestionnaireCompletion = {
   contact: QuestionnaireCompletionContact;
   answers: Record<string, unknown>;
   matchProductIds?: string[];
+  matchPackageIds?: string[];
   askedQuestionIds?: string[];
   skippedQuestions?: QuestionnaireCompletionSkipped[];
   specialistRequestId?: string;
