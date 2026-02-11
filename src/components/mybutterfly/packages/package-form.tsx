@@ -2,18 +2,22 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import Image from "next/image";
+
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Plus, Trash2 } from "lucide-react";
+import { Check, Package as PackageIcon, Plus, Search, Trash2 } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { VocabularyMultiSelect } from "@/components/mybutterfly/forms/vocabulary-multi-select";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -28,6 +32,7 @@ import type {
   WithId,
 } from "@/lib/firestore/types";
 import { listVocabularyKeys, type VocabularyCategory } from "@/lib/firestore/vocabulary";
+import { cn } from "@/lib/utils";
 
 const MAX_CUSTOM_ITEMS = 10;
 const ROLE_NONE = "__none__";
@@ -158,6 +163,191 @@ const formatRole = (role?: PackageItemRole) => {
   return "Fără rol";
 };
 
+const getProductImageUrl = (product?: WithId<Product> | null) => product?.imageUrl || product?.imageUrls?.[0];
+
+type PackageProductPickerProps = {
+  products: WithId<Product>[];
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  dialogTitle: string;
+  dialogDescription: string;
+};
+
+function PackageProductPicker({
+  products,
+  value,
+  onChange,
+  placeholder,
+  dialogTitle,
+  dialogDescription,
+}: PackageProductPickerProps) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const sortedProducts = useMemo(() => products.slice().sort((a, b) => a.name.localeCompare(b.name)), [products]);
+  const selectedProduct = useMemo(
+    () => sortedProducts.find((product) => product.id === value) ?? null,
+    [sortedProducts, value],
+  );
+  const filteredProducts = useMemo(() => {
+    const normalized = search.trim().toLowerCase();
+    if (!normalized) return sortedProducts;
+    return sortedProducts.filter((product) => {
+      const haystack = `${product.name} ${product.brand ?? ""}`.toLowerCase();
+      return haystack.includes(normalized);
+    });
+  }, [search, sortedProducts]);
+
+  useEffect(() => {
+    if (!open) {
+      setSearch("");
+    }
+  }, [open]);
+
+  const selectedImageUrl = getProductImageUrl(selectedProduct);
+
+  return (
+    <div className="space-y-2">
+      <Button type="button" variant="outline" className="w-full justify-between" onClick={() => setOpen(true)}>
+        <span className="truncate text-left">{selectedProduct?.name ?? placeholder}</span>
+        <span className="text-muted-foreground text-xs">{selectedProduct ? "Schimbă" : "Alege"}</span>
+      </Button>
+
+      {selectedProduct ? (
+        <div className="flex items-center gap-3 rounded-md border p-2">
+          <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-md border bg-muted">
+            {selectedImageUrl ? (
+              <Image
+                src={selectedImageUrl}
+                alt={selectedProduct.name}
+                fill
+                sizes="44px"
+                className="object-cover"
+                unoptimized
+              />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                <PackageIcon className="size-4" />
+              </div>
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="truncate font-medium text-sm">{selectedProduct.name}</div>
+            <div className="text-muted-foreground text-xs">
+              {selectedProduct.brand ?? "Fără brand"} • {selectedProduct.price} {selectedProduct.currency}
+            </div>
+          </div>
+          {!selectedProduct.active ? <Badge variant="outline">Inactiv</Badge> : null}
+        </div>
+      ) : (
+        <div className="rounded-md border border-dashed px-3 py-2 text-muted-foreground text-xs">
+          Niciun produs selectat.
+        </div>
+      )}
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="!max-w-none sm:!max-w-none flex h-[90vh] w-[95vw] flex-col gap-4 p-6">
+          <DialogHeader className="shrink-0">
+            <DialogTitle>{dialogTitle}</DialogTitle>
+            <DialogDescription>{dialogDescription}</DialogDescription>
+          </DialogHeader>
+          <div className="relative shrink-0">
+            <Search className="absolute top-3 left-3 size-4 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Caută produs după nume sau brand"
+              className="h-11 pl-9"
+            />
+          </div>
+
+          <ScrollArea className="min-h-0 flex-1 rounded-md border">
+            <div className="space-y-3 p-4">
+              {filteredProducts.length === 0 ? (
+                <div className="flex flex-col items-center justify-center gap-3 py-12">
+                  <PackageIcon className="size-10 text-muted-foreground/50" />
+                  <p className="text-muted-foreground text-sm">Nu s-au găsit produse.</p>
+                </div>
+              ) : (
+                filteredProducts.map((product) => {
+                  const imageUrl = getProductImageUrl(product);
+                  const isSelected = product.id === value;
+                  return (
+                    <Card
+                      key={product.id}
+                      className={cn(
+                        "cursor-pointer border-2 p-3 transition-all hover:border-primary hover:shadow-md",
+                        isSelected ? "border-primary bg-primary/5" : "border-border",
+                      )}
+                      onClick={() => {
+                        onChange(product.id);
+                        setOpen(false);
+                      }}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-md border bg-muted">
+                          {imageUrl ? (
+                            <Image
+                              src={imageUrl}
+                              alt={product.name}
+                              fill
+                              sizes="56px"
+                              className="object-cover"
+                              unoptimized
+                            />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                              <PackageIcon className="size-5" />
+                            </div>
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-medium text-sm">{product.name}</div>
+                          <div className="text-muted-foreground text-xs">{product.brand ?? "Fără brand"}</div>
+                        </div>
+                        <div className="flex flex-col items-end gap-2">
+                          {!product.active ? (
+                            <Badge variant="outline" className="text-xs">
+                              Inactiv
+                            </Badge>
+                          ) : null}
+                          <Badge variant="secondary" className="text-xs">
+                            {product.price} {product.currency}
+                          </Badge>
+                          {isSelected ? <Check className="size-4 text-primary" /> : null}
+                        </div>
+                      </div>
+                    </Card>
+                  );
+                })
+              )}
+            </div>
+          </ScrollArea>
+
+          <div className="flex items-center justify-between">
+            <div className="text-muted-foreground text-xs">
+              {selectedProduct ? `Selectat: ${selectedProduct.name}` : "Niciun produs selectat."}
+            </div>
+            {selectedProduct ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  onChange("");
+                  setOpen(false);
+                }}
+              >
+                Elimină selecția
+              </Button>
+            ) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
 export function PackageForm({ products, initialValues, defaultMode, onSubmit, onCancel }: PackageFormProps) {
   const initialMode = initialValues?.mode ?? defaultMode ?? "single";
   const roleMap = toRoleMap(initialValues?.items);
@@ -232,17 +422,6 @@ export function PackageForm({ products, initialValues, defaultMode, onSubmit, on
   }, [initialValues, vocabularyKeys]);
 
   const productsById = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
-  const productOptions = useMemo(
-    () =>
-      products
-        .slice()
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map((product) => ({
-          id: product.id,
-          label: `${product.name} — ${product.price} ${product.currency}${product.active ? "" : " (inactiv)"}`,
-        })),
-    [products],
-  );
 
   const mode = form.watch("mode");
   const selectedIds = form.watch(["singleProductId", "bladeProductId", "rubberFhProductId", "rubberBhProductId"]);
@@ -506,20 +685,14 @@ export function PackageForm({ products, initialValues, defaultMode, onSubmit, on
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Produs</FormLabel>
-                    <Select value={field.value || undefined} onValueChange={field.onChange}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Selectează produsul" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {productOptions.map((option) => (
-                          <SelectItem key={option.id} value={option.id}>
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <PackageProductPicker
+                      products={products}
+                      value={field.value ?? ""}
+                      onChange={field.onChange}
+                      placeholder="Selectează produsul"
+                      dialogTitle="Selectează produsul pachetului"
+                      dialogDescription="Alege produsul care va fi folosit în pachet."
+                    />
                   </FormItem>
                 )}
               />
@@ -533,20 +706,14 @@ export function PackageForm({ products, initialValues, defaultMode, onSubmit, on
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Lemn (blade)</FormLabel>
-                      <Select value={field.value || undefined} onValueChange={field.onChange}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Selectează lemnul" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {productOptions.map((option) => (
-                            <SelectItem key={option.id} value={option.id}>
-                              {option.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <PackageProductPicker
+                        products={products}
+                        value={field.value ?? ""}
+                        onChange={field.onChange}
+                        placeholder="Selectează lemnul"
+                        dialogTitle="Selectează produsul pentru lemn"
+                        dialogDescription="Alege produsul pentru rolul blade."
+                      />
                     </FormItem>
                   )}
                 />
@@ -557,20 +724,14 @@ export function PackageForm({ products, initialValues, defaultMode, onSubmit, on
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Față forehand (rubber_fh)</FormLabel>
-                      <Select value={field.value || undefined} onValueChange={field.onChange}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Selectează fața FH" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {productOptions.map((option) => (
-                            <SelectItem key={option.id} value={option.id}>
-                              {option.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <PackageProductPicker
+                        products={products}
+                        value={field.value ?? ""}
+                        onChange={field.onChange}
+                        placeholder="Selectează fața FH"
+                        dialogTitle="Selectează produsul pentru fața FH"
+                        dialogDescription="Alege produsul pentru rolul rubber_fh."
+                      />
                     </FormItem>
                   )}
                 />
@@ -581,20 +742,14 @@ export function PackageForm({ products, initialValues, defaultMode, onSubmit, on
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Față backhand (rubber_bh)</FormLabel>
-                      <Select value={field.value || undefined} onValueChange={field.onChange}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Selectează fața BH" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {productOptions.map((option) => (
-                            <SelectItem key={option.id} value={option.id}>
-                              {option.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <PackageProductPicker
+                        products={products}
+                        value={field.value ?? ""}
+                        onChange={field.onChange}
+                        placeholder="Selectează fața BH"
+                        dialogTitle="Selectează produsul pentru fața BH"
+                        dialogDescription="Alege produsul pentru rolul rubber_bh."
+                      />
                     </FormItem>
                   )}
                 />
@@ -612,21 +767,14 @@ export function PackageForm({ products, initialValues, defaultMode, onSubmit, on
                     <div className="grid gap-3 md:grid-cols-12">
                       <div className="md:col-span-7">
                         <FormLabel>Produs</FormLabel>
-                        <Select
-                          value={item.productId || undefined}
-                          onValueChange={(value) => updateCustomItem(item.id, { productId: value })}
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Selectează produsul" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {productOptions.map((option) => (
-                              <SelectItem key={option.id} value={option.id}>
-                                {option.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        <PackageProductPicker
+                          products={products}
+                          value={item.productId ?? ""}
+                          onChange={(value) => updateCustomItem(item.id, { productId: value })}
+                          placeholder="Selectează produsul"
+                          dialogTitle={`Selectează produsul pentru item ${index + 1}`}
+                          dialogDescription="Alege produsul care intră în acest item din pachet."
+                        />
                       </div>
                       <div className="md:col-span-4">
                         <FormLabel>Rol (opțional)</FormLabel>
