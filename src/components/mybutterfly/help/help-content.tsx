@@ -507,7 +507,7 @@ export const HELP_CONTENT: Record<HelpKey, { title: string; sections: HelpSectio
         title: "Ce faci aici",
         paragraphs: [
           "Configurezi comportamentul recomandărilor la nivel de aplicație.",
-          "În acest moment, setarea principală este pragul minim de potrivire (%).",
+          "Poți seta pragul minim de potrivire (%), cursul EUR→RON și TVA-ul folosit la conversia prețurilor PrestaShop.",
         ],
       },
       {
@@ -515,6 +515,20 @@ export const HELP_CONTENT: Record<HelpKey, { title: string; sections: HelpSectio
         paragraphs: [
           "Produsele sunt evaluate cu un matchPercent (0–100). Vor fi afișate toate produsele care au matchPercent peste pragul setat.",
           "Pragul nu este „top N”: nu există limită top 5; ordonarea se face după procentul de potrivire (și apoi criterii interne).",
+        ],
+      },
+      {
+        title: "Pricing PrestaShop",
+        paragraphs: [
+          "La importul PrestaShop, prețul EUR este convertit în RON cu formula: EUR × curs × (1 + TVA/100).",
+          "Rotunjirea este de tip half-up: la .5 se rotunjește în sus (fără zecimale).",
+        ],
+      },
+      {
+        title: "Recalculare prețuri",
+        paragraphs: [
+          "Butonul „Recalculează prețuri PrestaShop (RON)” actualizează manual produsele existente importate din PrestaShop care au moneda RON.",
+          "Operația nu rulează automat la salvarea setărilor și afișează un rezumat: scanate/actualizate/ignorate/eșuate.",
         ],
       },
       {

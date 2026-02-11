@@ -23,6 +23,7 @@ import { deleteProductImage } from "@/lib/firebase/storage.client";
 import { cache } from "@/lib/firestore/cache";
 import { touchMetaConfig } from "@/lib/firestore/meta";
 import type { Product, WithId } from "@/lib/firestore/types";
+import { convertEurToRonWithVat } from "@/lib/pricing/prestashop-price";
 
 type ListProductsParams = {
   activeOnly?: boolean;
@@ -224,4 +225,100 @@ export async function batchSetProductsActive(ids: string[], active: boolean) {
     }
   });
   await touchMetaConfig();
+}
+
+export type RecalculatePrestashopRonPricesResult = {
+  scanned: number;
+  updated: number;
+  ignored: number;
+  failed: number;
+};
+
+const extractPrestashopEurPrice = (product: Product): number | null => {
+  const source = (product.prestashopFull ?? {}) as Record<string, unknown>;
+  const value = source.price;
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+  if (typeof value === "string") {
+    const cleaned = value
+      .replace(/\s/g, "")
+      .replace(",", ".")
+      .replace(/[^0-9.-]/g, "");
+    const parsed = Number(cleaned);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return null;
+};
+
+export async function recalculatePrestashopRonPrices(params: {
+  exchangeRateEurRon: number;
+  vatPercent: number;
+  pageSize?: number;
+}): Promise<RecalculatePrestashopRonPricesResult> {
+  const { db } = initFirebase();
+  if (!db) throw new Error("Firestore not initialized.");
+
+  const productsCollection = collection(db, "products");
+  const pageSize = params.pageSize ?? 200;
+  let cursor: QueryDocumentSnapshot | undefined;
+  const result: RecalculatePrestashopRonPricesResult = {
+    scanned: 0,
+    updated: 0,
+    ignored: 0,
+    failed: 0,
+  };
+
+  while (true) {
+    const baseQuery = query(
+      productsCollection,
+      where("source.provider", "==", "prestashop"),
+      where("currency", "==", "RON"),
+      orderBy(documentId()),
+      limit(pageSize),
+    );
+    const q = cursor ? query(baseQuery, startAfter(cursor)) : baseQuery;
+    const snapshot = await getDocs(q);
+    if (snapshot.empty) break;
+
+    for (const docSnap of snapshot.docs) {
+      result.scanned += 1;
+      const product = docSnap.data() as Product;
+      const eurPrice = extractPrestashopEurPrice(product);
+      if (eurPrice === null) {
+        result.ignored += 1;
+        continue;
+      }
+      const nextPrice = convertEurToRonWithVat(eurPrice, params.exchangeRateEurRon, params.vatPercent);
+      if (!Number.isFinite(nextPrice) || nextPrice < 0) {
+        result.ignored += 1;
+        continue;
+      }
+      if (Number(product.price ?? 0) === nextPrice) {
+        result.ignored += 1;
+        continue;
+      }
+
+      try {
+        await updateDoc(docSnap.ref, {
+          price: nextPrice,
+          updatedAt: serverTimestamp(),
+        });
+        const cached = cache.products.get(docSnap.id);
+        if (cached) {
+          cache.products.set({ ...cached, price: nextPrice } as WithId<Product>);
+        }
+        result.updated += 1;
+      } catch {
+        result.failed += 1;
+      }
+    }
+
+    cursor = snapshot.docs[snapshot.docs.length - 1];
+    if (!cursor || snapshot.docs.length < pageSize) break;
+  }
+
+  if (result.updated > 0) {
+    await touchMetaConfig();
+  }
+
+  return result;
 }

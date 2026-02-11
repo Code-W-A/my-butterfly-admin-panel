@@ -134,11 +134,13 @@ export async function GET(request: Request) {
 
     const items = (data.products ?? []).map((product) => {
       const imageId = toImageId(product.id_default_image);
+      const priceEur = toNumber(product.price);
       return {
         id: String(product.id ?? ""),
         name: normalizeName(product.name, langId),
         reference: String(product.reference ?? ""),
-        price: toNumber(product.price),
+        price: priceEur,
+        priceEur,
         imageUrl: imageId ? buildPrestashopPublicImageUrl(imageId) : undefined,
         imageId: imageId || undefined,
       };

@@ -26,6 +26,7 @@ import { deleteProductImage, uploadProductImage } from "@/lib/firebase/storage.c
 import { listRuleSets } from "@/lib/firestore/recommendation-rule-sets";
 import type { Product, ProductRecommendationScenario, RecommendationRuleSet, WithId } from "@/lib/firestore/types";
 import { listVocabularyKeys, type VocabularyCategory } from "@/lib/firestore/vocabulary";
+import { convertEurToRonWithVat, normalizePricingConfig, type PricingConfig } from "@/lib/pricing/prestashop-price";
 
 const optionalNumber = z.preprocess(
   (value) => (value === "" || value === null || value === undefined ? undefined : Number(value)),
@@ -68,6 +69,9 @@ type ProductFormProps = {
   initialValues?: Product;
   prefillValues?: Partial<ProductFormValues>;
   imageSource?: "manual" | "prestashop";
+  pricingConfig?: PricingConfig;
+  basePriceEur?: number;
+  enableAutoRonConversion?: boolean;
   onSubmit: (values: Omit<Product, "createdAt" | "updatedAt">) => Promise<void>;
   onCancel?: () => void;
 };
@@ -145,6 +149,9 @@ export function ProductForm({
   initialValues,
   prefillValues,
   imageSource = "manual",
+  pricingConfig,
+  basePriceEur,
+  enableAutoRonConversion = true,
   onSubmit,
   onCancel,
 }: ProductFormProps) {
@@ -198,6 +205,13 @@ export function ProductForm({
   );
 
   const ruleSetSelectionSet = useMemo(() => new Set(ruleSetSelection), [ruleSetSelection]);
+  const normalizedPricing = useMemo(() => normalizePricingConfig(pricingConfig), [pricingConfig]);
+  const watchedCurrency = form.watch("currency");
+  const previousCurrencyRef = useRef<"EUR" | "RON">(form.getValues("currency"));
+  const lastEurBeforeRonRef = useRef<number | null>(
+    typeof basePriceEur === "number" && Number.isFinite(basePriceEur) ? basePriceEur : null,
+  );
+  const skipNextCurrencyTransitionRef = useRef(false);
 
   useEffect(() => {
     pendingFilesRef.current = pendingFiles;
@@ -265,12 +279,65 @@ export function ProductForm({
     if (prefillValues.name !== undefined) form.setValue("name", prefillValues.name, { shouldDirty: true });
     if (prefillValues.brand !== undefined) form.setValue("brand", prefillValues.brand, { shouldDirty: true });
     if (prefillValues.price !== undefined) form.setValue("price", prefillValues.price, { shouldDirty: true });
-    if (prefillValues.currency !== undefined) form.setValue("currency", prefillValues.currency, { shouldDirty: true });
+    if (prefillValues.currency !== undefined) {
+      skipNextCurrencyTransitionRef.current = true;
+      form.setValue("currency", prefillValues.currency, { shouldDirty: true });
+      previousCurrencyRef.current = prefillValues.currency;
+    }
     if (prefillValues.active !== undefined) form.setValue("active", prefillValues.active, { shouldDirty: true });
     if (prefillValues.imageUrls !== undefined) {
       form.setValue("imageUrls", prefillValues.imageUrls, { shouldDirty: true });
     }
   }, [form, prefillValues]);
+
+  useEffect(() => {
+    if (typeof basePriceEur === "number" && Number.isFinite(basePriceEur)) {
+      lastEurBeforeRonRef.current = basePriceEur;
+    }
+  }, [basePriceEur]);
+
+  useEffect(() => {
+    const currentCurrency = watchedCurrency;
+    const previousCurrency = previousCurrencyRef.current;
+    if (currentCurrency === previousCurrency) return;
+    if (skipNextCurrencyTransitionRef.current) {
+      skipNextCurrencyTransitionRef.current = false;
+      previousCurrencyRef.current = currentCurrency;
+      return;
+    }
+    if (!enableAutoRonConversion) {
+      previousCurrencyRef.current = currentCurrency;
+      return;
+    }
+
+    if (previousCurrency === "EUR" && currentCurrency === "RON") {
+      const eurPrice = Number(form.getValues("price") ?? 0);
+      if (Number.isFinite(eurPrice)) {
+        lastEurBeforeRonRef.current = eurPrice;
+        const converted = convertEurToRonWithVat(
+          eurPrice,
+          normalizedPricing.exchangeRateEurRon,
+          normalizedPricing.vatPercent,
+        );
+        form.setValue("price", converted, { shouldDirty: true, shouldValidate: true });
+      }
+    }
+
+    if (previousCurrency === "RON" && currentCurrency === "EUR") {
+      const fallbackEur = lastEurBeforeRonRef.current;
+      if (typeof fallbackEur === "number" && Number.isFinite(fallbackEur)) {
+        form.setValue("price", fallbackEur, { shouldDirty: true, shouldValidate: true });
+      }
+    }
+
+    previousCurrencyRef.current = currentCurrency;
+  }, [
+    enableAutoRonConversion,
+    form,
+    normalizedPricing.exchangeRateEurRon,
+    normalizedPricing.vatPercent,
+    watchedCurrency,
+  ]);
 
   const handleSubmit = async (values: ProductFormValues) => {
     const attributes = compactNumberFields(values.attributes);

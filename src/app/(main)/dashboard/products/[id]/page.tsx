@@ -7,19 +7,25 @@ import { useParams, useRouter } from "next/navigation";
 import { Search } from "lucide-react";
 
 import { PageHelpDialog } from "@/components/mybutterfly/help/page-help-dialog";
-import { PrestashopProductPicker } from "@/components/mybutterfly/products/prestashop-product-picker";
+import {
+  type PrestashopListItem,
+  PrestashopProductPicker,
+} from "@/components/mybutterfly/products/prestashop-product-picker";
 import { ProductForm } from "@/components/mybutterfly/products/product-form";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getProduct, updateProduct } from "@/lib/firestore/products";
+import { getRecommendationSettings } from "@/lib/firestore/settings";
 import type { Product, WithId } from "@/lib/firestore/types";
+import { convertEurToRonWithVat, normalizePricingConfig, type PricingConfig } from "@/lib/pricing/prestashop-price";
 
 type PrestashopDetails = {
   id: string;
   name: string;
   price: number;
+  priceEur?: number;
   currency: "EUR" | "RON";
   active: boolean;
   prestashopFull?: Record<string, unknown>;
@@ -27,6 +33,24 @@ type PrestashopDetails = {
   imageUrl?: string;
   imageId?: number;
   productUrl?: string;
+};
+
+const normalizeUnknownPrice = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+  if (typeof value === "string") {
+    const cleaned = value
+      .replace(/\s/g, "")
+      .replace(",", ".")
+      .replace(/[^0-9.-]/g, "");
+    const parsed = Number(cleaned);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return null;
+};
+
+const resolveEurPrice = (value: { price?: number; priceEur?: number }): number => {
+  const next = value.priceEur ?? value.price ?? 0;
+  return Number.isFinite(next) ? Math.max(0, next) : 0;
 };
 
 export default function ProductDetailPage() {
@@ -53,23 +77,57 @@ export default function ProductDetailPage() {
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [prestashopFull, setPrestashopFull] = useState<Record<string, unknown> | null>(null);
+  const [basePriceEur, setBasePriceEur] = useState<number | undefined>(undefined);
+  const [pricingConfig, setPricingConfig] = useState<PricingConfig>(() => normalizePricingConfig());
 
   useEffect(() => {
+    let mounted = true;
     const load = async () => {
       const data = await getProduct(productId);
+      if (!mounted) return;
       setProduct(data);
+      if (!data) {
+        setBasePriceEur(undefined);
+        return;
+      }
+      const eurFromPrestashop = normalizeUnknownPrice(
+        (data.prestashopFull as Record<string, unknown> | undefined)?.price,
+      );
+      if (eurFromPrestashop !== null) {
+        setBasePriceEur(eurFromPrestashop);
+      }
     };
     load();
+    return () => {
+      mounted = false;
+    };
   }, [productId]);
+
+  useEffect(() => {
+    let mounted = true;
+    getRecommendationSettings()
+      .then((settings) => {
+        if (!mounted) return;
+        setPricingConfig(normalizePricingConfig(settings));
+      })
+      .catch(() => {
+        // keep defaults
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const isPrestashopProduct = product?.source?.provider === "prestashop" || productId.startsWith("ps_");
 
-  const handleSelectPrestashop = async (item: { id: string; name: string; price: number; reference?: string }) => {
+  const handleSelectPrestashop = async (item: PrestashopListItem) => {
     setIsLoadingDetails(true);
+    const itemEurPrice = resolveEurPrice(item);
     try {
+      setBasePriceEur(itemEurPrice);
       setPrefillValues({
         name: item.name,
-        price: item.price,
+        price: convertEurToRonWithVat(itemEurPrice, pricingConfig.exchangeRateEurRon, pricingConfig.vatPercent),
         currency: "RON",
       });
       setPrestashopMeta({
@@ -78,10 +136,11 @@ export default function ProductDetailPage() {
 
       const response = await fetch(`/api/prestashop/products/${item.id}`);
       const data = (await response.json()) as PrestashopDetails;
-      console.log("[prestashop] details response", data);
       const resolvedImageUrls =
         data.imageUrls && data.imageUrls.length > 0 ? data.imageUrls : data.imageUrl ? [data.imageUrl] : [];
-      console.log("[prestashop] resolved images", resolvedImageUrls);
+      const detailsEurPrice = resolveEurPrice(data);
+      const resolvedEurPrice = detailsEurPrice > 0 ? detailsEurPrice : itemEurPrice;
+      setBasePriceEur(resolvedEurPrice);
       setPrestashopFull(data.prestashopFull ?? null);
       setPrefillValues((prev) => {
         const next = { ...(prev ?? {}) } as {
@@ -95,8 +154,11 @@ export default function ProductDetailPage() {
         };
         const resolvedName = data.name?.trim() ? data.name : item.name;
         if (resolvedName.trim()) next.name = resolvedName;
-        const resolvedPrice = data.price && data.price > 0 ? data.price : item.price;
-        if (resolvedPrice !== undefined) next.price = resolvedPrice;
+        next.price = convertEurToRonWithVat(
+          resolvedEurPrice,
+          pricingConfig.exchangeRateEurRon,
+          pricingConfig.vatPercent,
+        );
         next.currency = "RON";
         if (data.active !== undefined) next.active = data.active;
         if (resolvedImageUrls.length) {
@@ -164,6 +226,8 @@ export default function ProductDetailPage() {
         initialValues={product}
         prefillValues={prefillValues}
         imageSource={isPrestashopProduct ? "prestashop" : "manual"}
+        pricingConfig={pricingConfig}
+        basePriceEur={isPrestashopProduct ? basePriceEur : undefined}
         onSubmit={async (values) => {
           const prestashopValue = prestashopMeta?.imageId
             ? prestashopMeta
@@ -221,6 +285,7 @@ export default function ProductDetailPage() {
               selectedId={prestashopMeta?.productId ? String(prestashopMeta.productId) : undefined}
               query={searchQuery}
               onQueryChange={setSearchQuery}
+              pricingConfig={pricingConfig}
               inline
             />
           </div>

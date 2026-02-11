@@ -212,11 +212,13 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ id
         : `${baseUrl}/index.php?id_product=${id}&controller=product`
       : undefined;
     const currency = process.env.PRESTASHOP_CURRENCY === "RON" ? "RON" : "EUR";
+    const priceEur = toNumber(product.price);
 
     return NextResponse.json({
       id: String(product.id ?? id),
       name: normalizeName(product.name),
-      price: toNumber(product.price),
+      price: priceEur,
+      priceEur,
       currency,
       active: String(product.active ?? "0") === "1",
       imageUrl,

@@ -34,8 +34,10 @@ import {
   updateProduct,
 } from "@/lib/firestore/products";
 import { listRuleSets, updateRuleSet } from "@/lib/firestore/recommendation-rule-sets";
+import { getRecommendationSettings } from "@/lib/firestore/settings";
 import type { Product, ProductRecommendationScenario, RecommendationRuleSet, WithId } from "@/lib/firestore/types";
 import { listVocabularyKeys, type VocabularyCategory } from "@/lib/firestore/vocabulary";
+import { convertEurToRonWithVat, normalizePricingConfig, type PricingConfig } from "@/lib/pricing/prestashop-price";
 
 const SKELETON_ROWS = ["s1", "s2", "s3", "s4", "s5", "s6"];
 const IMPORT_CONCURRENCY = 4;
@@ -45,6 +47,7 @@ type PrestashopListItem = {
   name: string;
   reference?: string;
   price: number;
+  priceEur?: number;
   imageUrl?: string;
   imageId?: number;
 };
@@ -53,6 +56,7 @@ type PrestashopDetails = {
   id: string;
   name: string;
   price: number;
+  priceEur?: number;
   currency: "EUR" | "RON";
   active: boolean;
   prestashopFull?: Record<string, unknown>;
@@ -152,6 +156,11 @@ const runWithConcurrency = async <T, R>(items: T[], limit: number, worker: (item
   return Promise.allSettled(results);
 };
 
+const resolveEurPrice = (value: { price?: number; priceEur?: number }) => {
+  const next = value.priceEur ?? value.price ?? 0;
+  return Number.isFinite(next) ? Math.max(0, next) : 0;
+};
+
 export default function ProductsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -207,6 +216,7 @@ export default function ProductsPage() {
   );
 
   const [sort, setSort] = useState<SortState<"name" | "brand" | "price" | "active">>({ key: "name", dir: "asc" });
+  const [pricingConfig, setPricingConfig] = useState<PricingConfig>(() => normalizePricingConfig());
 
   const selectedIdSet = useMemo(() => new Set(importSelected.map((item) => item.id)), [importSelected]);
   const existingIdSet = useMemo(() => importExistingIds, [importExistingIds]);
@@ -408,6 +418,16 @@ export default function ProductsPage() {
   }, [searchParams]);
 
   useEffect(() => {
+    getRecommendationSettings()
+      .then((settings) => {
+        setPricingConfig(normalizePricingConfig(settings));
+      })
+      .catch(() => {
+        // keep defaults
+      });
+  }, []);
+
+  useEffect(() => {
     if (!isImportOpen) return;
     const term = debouncedImportQuery.trim();
     if (term.length < 2) {
@@ -555,7 +575,14 @@ export default function ProductsPage() {
           const response = await fetch(`/api/prestashop/products/${item.id}`);
           const data = (await response.json()) as PrestashopDetails;
           const resolvedName = data.name?.trim() || item.name;
-          const resolvedPrice = data.price && data.price > 0 ? data.price : item.price;
+          const detailsEurPrice = resolveEurPrice(data);
+          const itemEurPrice = resolveEurPrice(item);
+          const resolvedEurPrice = detailsEurPrice > 0 ? detailsEurPrice : itemEurPrice;
+          const resolvedRonPrice = convertEurToRonWithVat(
+            resolvedEurPrice,
+            pricingConfig.exchangeRateEurRon,
+            pricingConfig.vatPercent,
+          );
           const resolvedImageUrls =
             data.imageUrls && data.imageUrls.length > 0
               ? data.imageUrls
@@ -571,8 +598,8 @@ export default function ProductsPage() {
             imageUrls: resolvedImageUrls,
             imageUrl: resolvedImageUrls[0],
             productUrl: data.productUrl,
-            price: resolvedPrice ?? 0,
-            currency: data.currency ?? "RON",
+            price: resolvedRonPrice,
+            currency: "RON",
             tags: { level: [], style: [], distance: [] },
             attributes: {},
             source: {
@@ -1001,6 +1028,12 @@ export default function ProductsPage() {
                   ) : (
                     importItems.map((item) => {
                       const isSelected = selectedIdSet.has(item.id);
+                      const eurPrice = resolveEurPrice(item);
+                      const ronPrice = convertEurToRonWithVat(
+                        eurPrice,
+                        pricingConfig.exchangeRateEurRon,
+                        pricingConfig.vatPercent,
+                      );
                       return (
                         <Card
                           key={item.id}
@@ -1033,6 +1066,7 @@ export default function ProductsPage() {
                               <div className="text-muted-foreground text-xs">
                                 {item.reference ? `Ref: ${item.reference}` : "Fără referință"}
                               </div>
+                              <div className="text-muted-foreground text-xs">din {eurPrice.toFixed(2)} EUR</div>
                             </div>
                             <div className="flex flex-col items-end gap-2">
                               {existingIdSet.has(item.id) ? (
@@ -1041,7 +1075,7 @@ export default function ProductsPage() {
                                 </Badge>
                               ) : null}
                               <Badge variant="secondary" className="shrink-0 text-xs">
-                                {item.price.toFixed(2)} RON
+                                {ronPrice} RON
                               </Badge>
                             </div>
                           </div>

@@ -91,6 +91,12 @@ Subcollection: `users/{uid}/questionnaireAnalyticsDaily/{docId}`
 - `updatedAt`: timestamp (serverTimestamp)
 Used to signal content updates to the mobile app (cache invalidation).
 
+### App settings: `app_settings/recommendations`
+- `minMatchPercent`: number (0-100)
+- `exchangeRateEurRon`: number (default fallback: `4.9`)
+- `vatPercent`: number (default fallback: `21`)
+- `updatedAt`: timestamp (serverTimestamp)
+
 ## Suggested Indexes
 - `questionnaireCompletions` ordered by `createdAt desc`
 - `questionnaireCompletions` with `where("questionnaireId","==",...)` + `orderBy("createdAt","desc")`

@@ -1,24 +1,30 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useRouter } from "next/navigation";
 
 import { Search } from "lucide-react";
 
 import { PageHelpDialog } from "@/components/mybutterfly/help/page-help-dialog";
-import { PrestashopProductPicker } from "@/components/mybutterfly/products/prestashop-product-picker";
+import {
+  type PrestashopListItem,
+  PrestashopProductPicker,
+} from "@/components/mybutterfly/products/prestashop-product-picker";
 import { ProductForm } from "@/components/mybutterfly/products/product-form";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { createProduct, getProduct, upsertProductById } from "@/lib/firestore/products";
+import { getRecommendationSettings } from "@/lib/firestore/settings";
+import { convertEurToRonWithVat, normalizePricingConfig, type PricingConfig } from "@/lib/pricing/prestashop-price";
 
 type PrestashopDetails = {
   id: string;
   name: string;
   price: number;
+  priceEur?: number;
   currency: "EUR" | "RON";
   active: boolean;
   prestashopFull?: Record<string, unknown>;
@@ -26,6 +32,11 @@ type PrestashopDetails = {
   imageUrl?: string;
   imageId?: number;
   productUrl?: string;
+};
+
+const resolveEurPrice = (value: { price?: number; priceEur?: number }) => {
+  const next = value.priceEur ?? value.price ?? 0;
+  return Number.isFinite(next) ? Math.max(0, next) : 0;
 };
 
 export default function NewProductPage() {
@@ -52,16 +63,35 @@ export default function NewProductPage() {
     imageUrl?: string;
     productUrl?: string;
   } | null>(null);
+  const [basePriceEur, setBasePriceEur] = useState<number | undefined>(undefined);
+  const [pricingConfig, setPricingConfig] = useState<PricingConfig>(() => normalizePricingConfig());
 
-  const handleSelectPrestashop = async (product: { id: string; name: string; price: number; reference?: string }) => {
+  useEffect(() => {
+    let mounted = true;
+    getRecommendationSettings()
+      .then((settings) => {
+        if (!mounted) return;
+        setPricingConfig(normalizePricingConfig(settings));
+      })
+      .catch(() => {
+        // keep defaults
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const handleSelectPrestashop = async (product: PrestashopListItem) => {
     setSelectedPrestashopId(product.id);
     setAlreadyImportedId(null);
     setIsLoadingDetails(true);
     const docId = `ps_${product.id}`;
+    const itemEurPrice = resolveEurPrice(product);
     try {
+      setBasePriceEur(itemEurPrice);
       setPrefillValues({
         name: product.name,
-        price: product.price,
+        price: convertEurToRonWithVat(itemEurPrice, pricingConfig.exchangeRateEurRon, pricingConfig.vatPercent),
         currency: "RON",
       });
       setPrestashopMeta({
@@ -70,10 +100,11 @@ export default function NewProductPage() {
 
       const response = await fetch(`/api/prestashop/products/${product.id}`);
       const data = (await response.json()) as PrestashopDetails;
-      console.log("[prestashop] details response", data);
       const resolvedImageUrls =
         data.imageUrls && data.imageUrls.length > 0 ? data.imageUrls : data.imageUrl ? [data.imageUrl] : [];
-      console.log("[prestashop] resolved images", resolvedImageUrls);
+      const detailsEurPrice = resolveEurPrice(data);
+      const resolvedEurPrice = detailsEurPrice > 0 ? detailsEurPrice : itemEurPrice;
+      setBasePriceEur(resolvedEurPrice);
       setPrestashopFull(data.prestashopFull ?? null);
       setPrefillValues((prev) => {
         const next = { ...(prev ?? {}) } as {
@@ -87,8 +118,11 @@ export default function NewProductPage() {
         };
         const resolvedName = data.name?.trim() ? data.name : product.name;
         if (resolvedName.trim()) next.name = resolvedName;
-        const resolvedPrice = data.price && data.price > 0 ? data.price : product.price;
-        if (resolvedPrice !== undefined) next.price = resolvedPrice;
+        next.price = convertEurToRonWithVat(
+          resolvedEurPrice,
+          pricingConfig.exchangeRateEurRon,
+          pricingConfig.vatPercent,
+        );
         next.currency = "RON";
         if (data.active !== undefined) next.active = data.active;
         if (resolvedImageUrls.length) {
@@ -131,7 +165,12 @@ export default function NewProductPage() {
           </div>
           <RadioGroup
             value={source}
-            onValueChange={(value) => setSource(value as "manual" | "prestashop")}
+            onValueChange={(value) => {
+              setSource(value as "manual" | "prestashop");
+              if (value === "manual") {
+                setBasePriceEur(undefined);
+              }
+            }}
             className="flex gap-2"
           >
             <div className="flex items-center gap-2 rounded-md border px-3 py-2">
@@ -208,6 +247,7 @@ export default function NewProductPage() {
               selectedId={selectedPrestashopId ?? undefined}
               query={searchQuery}
               onQueryChange={setSearchQuery}
+              pricingConfig={pricingConfig}
               inline
             />
           </div>
@@ -217,6 +257,8 @@ export default function NewProductPage() {
       <ProductForm
         prefillValues={source === "prestashop" ? prefillValues : undefined}
         imageSource={source === "prestashop" ? "prestashop" : "manual"}
+        pricingConfig={pricingConfig}
+        basePriceEur={source === "prestashop" ? basePriceEur : undefined}
         onSubmit={async (values) => {
           if (source === "prestashop" && selectedPrestashopId) {
             const docId = `ps_${selectedPrestashopId}`;
