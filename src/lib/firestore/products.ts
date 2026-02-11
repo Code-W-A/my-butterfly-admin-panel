@@ -231,12 +231,13 @@ export type RecalculatePrestashopRonPricesResult = {
   scanned: number;
   updated: number;
   ignored: number;
+  ignoredMissingEurPrice: number;
+  ignoredUnchangedPrice: number;
+  ignoredInvalidComputedPrice: number;
   failed: number;
 };
 
-const extractPrestashopEurPrice = (product: Product): number | null => {
-  const source = (product.prestashopFull ?? {}) as Record<string, unknown>;
-  const value = source.price;
+const parsePrestashopPrice = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
   if (typeof value === "string") {
     const cleaned = value
@@ -247,6 +248,24 @@ const extractPrestashopEurPrice = (product: Product): number | null => {
     if (Number.isFinite(parsed) && parsed >= 0) return parsed;
   }
   return null;
+};
+
+const extractPrestashopEurPrice = (product: Product): number | null => {
+  const source = (product.prestashopFull ?? {}) as Record<string, unknown>;
+  return parsePrestashopPrice(source.price);
+};
+
+const fetchPrestashopEurPrice = async (prestashopProductId: string): Promise<number | null> => {
+  try {
+    const response = await fetch(`/api/prestashop/products/${encodeURIComponent(prestashopProductId)}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) return null;
+    const data = (await response.json()) as { priceEur?: unknown; price?: unknown };
+    return parsePrestashopPrice(data.priceEur ?? data.price);
+  } catch {
+    return null;
+  }
 };
 
 export async function recalculatePrestashopRonPrices(params: {
@@ -264,6 +283,9 @@ export async function recalculatePrestashopRonPrices(params: {
     scanned: 0,
     updated: 0,
     ignored: 0,
+    ignoredMissingEurPrice: 0,
+    ignoredUnchangedPrice: 0,
+    ignoredInvalidComputedPrice: 0,
     failed: 0,
   };
 
@@ -282,26 +304,38 @@ export async function recalculatePrestashopRonPrices(params: {
     for (const docSnap of snapshot.docs) {
       result.scanned += 1;
       const product = docSnap.data() as Product;
-      const eurPrice = extractPrestashopEurPrice(product);
+      let eurPrice = extractPrestashopEurPrice(product);
+      let usedFallbackFetch = false;
+      if (eurPrice === null && product.source?.prestashopProductId) {
+        eurPrice = await fetchPrestashopEurPrice(product.source.prestashopProductId);
+        usedFallbackFetch = eurPrice !== null;
+      }
       if (eurPrice === null) {
         result.ignored += 1;
+        result.ignoredMissingEurPrice += 1;
         continue;
       }
       const nextPrice = convertEurToRonWithVat(eurPrice, params.exchangeRateEurRon, params.vatPercent);
       if (!Number.isFinite(nextPrice) || nextPrice < 0) {
         result.ignored += 1;
+        result.ignoredInvalidComputedPrice += 1;
         continue;
       }
       if (Number(product.price ?? 0) === nextPrice) {
         result.ignored += 1;
+        result.ignoredUnchangedPrice += 1;
         continue;
       }
 
       try {
-        await updateDoc(docSnap.ref, {
+        const patch: Record<string, unknown> = {
           price: nextPrice,
           updatedAt: serverTimestamp(),
-        });
+        };
+        if (usedFallbackFetch) {
+          patch["prestashopFull.price"] = eurPrice;
+        }
+        await updateDoc(docSnap.ref, patch);
         const cached = cache.products.get(docSnap.id);
         if (cached) {
           cache.products.set({ ...cached, price: nextPrice } as WithId<Product>);

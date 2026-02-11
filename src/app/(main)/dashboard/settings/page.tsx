@@ -18,6 +18,9 @@ type RecalculationSummary = {
   scanned: number;
   updated: number;
   ignored: number;
+  ignoredMissingEurPrice: number;
+  ignoredUnchangedPrice: number;
+  ignoredInvalidComputedPrice: number;
   failed: number;
 };
 
@@ -178,6 +181,8 @@ export default function SettingsPage() {
             <Button type="button" onClick={handleSave} disabled={isSaving || isLoading || isRecalculating}>
               {isSaving ? "Se salvează..." : "Salvează"}
             </Button>
+            {/* 
+            RAMANE COMENTAT SI SCOATEM LA NEVOIE
             <Button
               type="button"
               variant="outline"
@@ -185,7 +190,7 @@ export default function SettingsPage() {
               disabled={isRecalculating || isLoading || isSaving}
             >
               {isRecalculating ? "Se recalculează..." : "Recalculează prețuri PrestaShop (RON)"}
-            </Button>
+            </Button> */}
           </div>
 
           {recalculationSummary ? (
@@ -194,6 +199,11 @@ export default function SettingsPage() {
               <div className="text-muted-foreground text-xs">
                 Scanate: {recalculationSummary.scanned} • Actualizate: {recalculationSummary.updated} • Ignorate:{" "}
                 {recalculationSummary.ignored} • Eșuate: {recalculationSummary.failed}
+              </div>
+              <div className="text-muted-foreground text-xs">
+                Ignorate fără bază EUR: {recalculationSummary.ignoredMissingEurPrice} • Ignorate neschimbate:{" "}
+                {recalculationSummary.ignoredUnchangedPrice} • Ignorate calcul invalid:{" "}
+                {recalculationSummary.ignoredInvalidComputedPrice}
               </div>
             </div>
           ) : null}
