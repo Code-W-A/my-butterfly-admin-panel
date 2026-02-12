@@ -98,11 +98,12 @@ const normalizeRole = (value: unknown): PackageItemRole | undefined => {
   throw new Error("Rolul item-ului este invalid.");
 };
 
-const normalizeItems = (items: RecommendationPackageItem[]) =>
-  items.map((item) => ({
-    role: normalizeRole(item.role),
-    productId: String(item.productId ?? "").trim(),
-  }));
+const normalizeItems = (items: RecommendationPackageItem[]): RecommendationPackageItem[] =>
+  items.map((item) => {
+    const role = normalizeRole(item.role);
+    const productId = String(item.productId ?? "").trim();
+    return role ? { role, productId } : { productId };
+  });
 
 async function resolvePackageTotals(items: RecommendationPackageItem[]) {
   const uniqueIds = [...new Set(items.map((item) => item.productId).filter(Boolean))];

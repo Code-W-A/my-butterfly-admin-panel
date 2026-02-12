@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import Image from "next/image";
+import Link from "next/link";
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Check, Package as PackageIcon, Plus, Search, Trash2 } from "lucide-react";
@@ -13,6 +14,7 @@ import { VocabularyMultiSelect } from "@/components/mybutterfly/forms/vocabulary
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { InfoTip } from "@/components/ui/info-tip";
@@ -22,6 +24,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
+import { getRuleSet, listRuleSets } from "@/lib/firestore/recommendation-rule-sets";
 import type {
   PackageItemRole,
   PackageMode,
@@ -29,6 +32,7 @@ import type {
   ProductRecommendationScenario,
   RecommendationPackage,
   RecommendationPackageItem,
+  RecommendationRuleSet,
   WithId,
 } from "@/lib/firestore/types";
 import { listVocabularyKeys, type VocabularyCategory } from "@/lib/firestore/vocabulary";
@@ -79,6 +83,7 @@ type PackageFormProps = {
   products: WithId<Product>[];
   initialValues?: RecommendationPackage;
   defaultMode?: PackageMode;
+  presetImportRuleId?: string | null;
   onSubmit: (values: PackageFormPayload) => Promise<void>;
   onCancel?: () => void;
 };
@@ -138,6 +143,24 @@ const formatScenarioSummary = (
     parts.push("Are explicație");
   }
   return parts.length ? parts.join(" • ") : "Fără condiții setate";
+};
+
+const getRuleScenario = (rule: RecommendationRuleSet) => rule.scenario ?? rule.scenarios?.[0] ?? null;
+
+const mergeImportedScenarios = (
+  existing: ScenarioDraft[],
+  incoming: ProductRecommendationScenario[],
+  vocabularyKeys: string[],
+): ScenarioDraft[] => {
+  const maxOrder = existing.length ? Math.max(...existing.map((scenario) => scenario.order)) : -1;
+  const appended = incoming.map((scenario, index) => ({
+    id: generateClientId(),
+    active: scenario.active,
+    order: maxOrder + index + 1,
+    explanationTemplate: scenario.explanationTemplate ?? "",
+    conditions: buildConditionMap(vocabularyKeys, scenario.conditions),
+  }));
+  return [...existing, ...appended];
 };
 
 const toRoleMap = (items: RecommendationPackageItem[] | undefined) => {
@@ -348,7 +371,14 @@ function PackageProductPicker({
   );
 }
 
-export function PackageForm({ products, initialValues, defaultMode, onSubmit, onCancel }: PackageFormProps) {
+export function PackageForm({
+  products,
+  initialValues,
+  defaultMode,
+  presetImportRuleId,
+  onSubmit,
+  onCancel,
+}: PackageFormProps) {
   const initialMode = initialValues?.mode ?? defaultMode ?? "single";
   const roleMap = toRoleMap(initialValues?.items);
   const form = useForm<PackageFormValues>({
@@ -381,6 +411,13 @@ export function PackageForm({ products, initialValues, defaultMode, onSubmit, on
   const [isScenarioDialogOpen, setIsScenarioDialogOpen] = useState(false);
   const [editingScenarioIndex, setEditingScenarioIndex] = useState<number | null>(null);
   const [scenarioDialogMode, setScenarioDialogMode] = useState<"add" | "edit">("edit");
+  const [isRuleImportOpen, setIsRuleImportOpen] = useState(false);
+  const [isRuleImportLoading, setIsRuleImportLoading] = useState(false);
+  const [isRuleImportApplying, setIsRuleImportApplying] = useState(false);
+  const [ruleImportError, setRuleImportError] = useState<string | null>(null);
+  const [ruleSets, setRuleSets] = useState<WithId<RecommendationRuleSet>[]>([]);
+  const [selectedRuleIds, setSelectedRuleIds] = useState<string[]>([]);
+  const importedPresetRuleIdsRef = useRef<Set<string>>(new Set());
 
   const sortedVocabularyCategories = useMemo(
     () => vocabularyCategories.slice().sort((a, b) => a.order - b.order),
@@ -416,10 +453,55 @@ export function PackageForm({ products, initialValues, defaultMode, onSubmit, on
         active: scenario.active,
         order: scenario.order,
         explanationTemplate: scenario.explanationTemplate ?? "",
-        conditions: buildConditionMap(vocabularyKeys, scenario.conditions),
+        conditions: buildConditionMap([], scenario.conditions),
       })),
     );
-  }, [initialValues, vocabularyKeys]);
+  }, [initialValues]);
+
+  useEffect(() => {
+    if (!isRuleImportOpen) return;
+    setIsRuleImportLoading(true);
+    setRuleImportError(null);
+    listRuleSets()
+      .then((items) => setRuleSets(items))
+      .catch((err) => {
+        logFirebaseError("Packages: loadRuleSetsForImport", err);
+        const info = getFirebaseErrorInfo(err);
+        setRuleImportError(info.message || "Nu pot încărca regulile reutilizabile.");
+        setRuleSets([]);
+      })
+      .finally(() => setIsRuleImportLoading(false));
+  }, [isRuleImportOpen]);
+
+  useEffect(() => {
+    const ruleId = presetImportRuleId?.trim();
+    if (!ruleId || importedPresetRuleIdsRef.current.has(ruleId)) return;
+    importedPresetRuleIdsRef.current.add(ruleId);
+
+    let isCancelled = false;
+    const importPresetRule = async () => {
+      try {
+        const rule = await getRuleSet(ruleId);
+        if (isCancelled) return;
+        const source = rule ? getRuleScenario(rule) : null;
+        if (!rule || !source) {
+          setFormError((prev) => prev ?? "Nu am găsit regula preset pentru import sau nu are scenariu valid.");
+          return;
+        }
+        setScenarios((prev) => mergeImportedScenarios(prev, [source], vocabularyKeys));
+      } catch (err) {
+        if (isCancelled) return;
+        logFirebaseError("Packages: importPresetRule", err);
+        const info = getFirebaseErrorInfo(err);
+        setFormError((prev) => prev ?? (info.message || "Nu am putut importa regula preset."));
+      }
+    };
+
+    void importPresetRule();
+    return () => {
+      isCancelled = true;
+    };
+  }, [presetImportRuleId, vocabularyKeys]);
 
   const productsById = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
 
@@ -454,6 +536,7 @@ export function PackageForm({ products, initialValues, defaultMode, onSubmit, on
     [selectedProducts],
   );
   const currencyLabel = currencies.length === 1 ? currencies[0] : currencies.length > 1 ? "MIX" : "—";
+  const selectedRuleIdSet = useMemo(() => new Set(selectedRuleIds), [selectedRuleIds]);
 
   const customHasEmptyProducts = mode === "custom" && customItems.some((item) => !item.productId.trim());
   const customOutOfBounds = mode === "custom" && (customItems.length < 1 || customItems.length > MAX_CUSTOM_ITEMS);
@@ -519,6 +602,31 @@ export function PackageForm({ products, initialValues, defaultMode, onSubmit, on
     if (editingScenarioIndex === index) {
       setIsScenarioDialogOpen(false);
       setEditingScenarioIndex(null);
+    }
+  };
+
+  const toggleRuleImportSelection = (id: string) => {
+    setSelectedRuleIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+  };
+
+  const handleImportSelectedRules = async () => {
+    if (isRuleImportApplying || selectedRuleIds.length === 0) return;
+    setIsRuleImportApplying(true);
+    setRuleImportError(null);
+    try {
+      const selectedRules = ruleSets.filter((item) => selectedRuleIdSet.has(item.id));
+      const incomingScenarios = selectedRules
+        .map((rule) => getRuleScenario(rule))
+        .filter(Boolean) as ProductRecommendationScenario[];
+      if (incomingScenarios.length === 0) {
+        setRuleImportError("Regulile selectate nu conțin scenarii valide.");
+        return;
+      }
+      setScenarios((prev) => mergeImportedScenarios(prev, incomingScenarios, vocabularyKeys));
+      setIsRuleImportOpen(false);
+      setSelectedRuleIds([]);
+    } finally {
+      setIsRuleImportApplying(false);
     }
   };
 
@@ -761,57 +869,59 @@ export function PackageForm({ products, initialValues, defaultMode, onSubmit, on
                 <div className="text-muted-foreground text-sm">
                   Adaugă între 1 și {MAX_CUSTOM_ITEMS} produse. Rolul este opțional.
                 </div>
-                {customItems.map((item, index) => (
-                  <div key={item.id} className="rounded-md border p-3">
-                    <div className="mb-2 font-medium text-sm">Item {index + 1}</div>
-                    <div className="grid gap-3 md:grid-cols-12">
-                      <div className="md:col-span-7">
-                        <FormLabel>Produs</FormLabel>
-                        <PackageProductPicker
-                          products={products}
-                          value={item.productId ?? ""}
-                          onChange={(value) => updateCustomItem(item.id, { productId: value })}
-                          placeholder="Selectează produsul"
-                          dialogTitle={`Selectează produsul pentru item ${index + 1}`}
-                          dialogDescription="Alege produsul care intră în acest item din pachet."
-                        />
-                      </div>
-                      <div className="md:col-span-4">
-                        <FormLabel>Rol (opțional)</FormLabel>
-                        <Select
-                          value={item.role ?? ROLE_NONE}
-                          onValueChange={(value) =>
-                            updateCustomItem(item.id, {
-                              role: value === ROLE_NONE ? undefined : (value as PackageItemRole),
-                            })
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value={ROLE_NONE}>Fără rol</SelectItem>
-                            <SelectItem value="single">{formatRole("single")}</SelectItem>
-                            <SelectItem value="blade">{formatRole("blade")}</SelectItem>
-                            <SelectItem value="rubber_fh">{formatRole("rubber_fh")}</SelectItem>
-                            <SelectItem value="rubber_bh">{formatRole("rubber_bh")}</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="flex items-end md:col-span-1">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="icon"
-                          onClick={() => removeCustomItem(item.id)}
-                          disabled={customItems.length <= 1}
-                        >
-                          <Trash2 className="size-4" />
-                        </Button>
+                <div className="grid gap-3 lg:grid-cols-2">
+                  {customItems.map((item, index) => (
+                    <div key={item.id} className="rounded-md border p-3">
+                      <div className="mb-2 font-medium text-sm">Item {index + 1}</div>
+                      <div className="grid gap-3 md:grid-cols-12">
+                        <div className="md:col-span-7">
+                          <FormLabel>Produs</FormLabel>
+                          <PackageProductPicker
+                            products={products}
+                            value={item.productId ?? ""}
+                            onChange={(value) => updateCustomItem(item.id, { productId: value })}
+                            placeholder="Selectează produsul"
+                            dialogTitle={`Selectează produsul pentru item ${index + 1}`}
+                            dialogDescription="Alege produsul care intră în acest item din pachet."
+                          />
+                        </div>
+                        <div className="md:col-span-4">
+                          <FormLabel>Rol (opțional)</FormLabel>
+                          <Select
+                            value={item.role ?? ROLE_NONE}
+                            onValueChange={(value) =>
+                              updateCustomItem(item.id, {
+                                role: value === ROLE_NONE ? undefined : (value as PackageItemRole),
+                              })
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value={ROLE_NONE}>Fără rol</SelectItem>
+                              <SelectItem value="single">{formatRole("single")}</SelectItem>
+                              <SelectItem value="blade">{formatRole("blade")}</SelectItem>
+                              <SelectItem value="rubber_fh">{formatRole("rubber_fh")}</SelectItem>
+                              <SelectItem value="rubber_bh">{formatRole("rubber_bh")}</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="flex items-end md:col-span-1">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="icon"
+                            onClick={() => removeCustomItem(item.id)}
+                            disabled={customItems.length <= 1}
+                          >
+                            <Trash2 className="size-4" />
+                          </Button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
                 <div className="flex justify-end">
                   <Button
                     type="button"
@@ -891,7 +1001,10 @@ export function PackageForm({ products, initialValues, defaultMode, onSubmit, on
                 ))}
               </div>
             )}
-            <div className="flex justify-end">
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setIsRuleImportOpen(true)} disabled={isSubmitting}>
+                Importă reguli reutilizabile
+              </Button>
               <Button type="button" variant="outline" onClick={handleAddScenario} disabled={isSubmitting}>
                 <Plus className="mr-2 size-4" />
                 Adaugă scenariu
@@ -907,7 +1020,7 @@ export function PackageForm({ products, initialValues, defaultMode, onSubmit, on
             if (!open) setEditingScenarioIndex(null);
           }}
         >
-          <DialogContent className="sm:max-w-3xl">
+          <DialogContent className="!max-w-none sm:!max-w-none flex h-[92vh] w-[96vw] flex-col gap-4 p-6">
             <DialogTitle>Editează scenariu</DialogTitle>
             {editingScenarioIndex !== null ? (
               <div className="space-y-4">
@@ -923,7 +1036,7 @@ export function PackageForm({ products, initialValues, defaultMode, onSubmit, on
                 {sortedVocabularyCategories.length === 0 ? (
                   <div className="text-muted-foreground text-sm">Nu există categorii în Vocabulary.</div>
                 ) : (
-                  <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                     {sortedVocabularyCategories.map((category) => {
                       const label = category.active ? category.title : `${category.title} (inactiv)`;
                       const tip =
@@ -987,6 +1100,90 @@ export function PackageForm({ products, initialValues, defaultMode, onSubmit, on
                 </div>
               </div>
             ) : null}
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={isRuleImportOpen}
+          onOpenChange={(open) => {
+            setIsRuleImportOpen(open);
+            if (!open) {
+              setSelectedRuleIds([]);
+              setRuleImportError(null);
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>Importă reguli reutilizabile</DialogTitle>
+              <DialogDescription>
+                Selectează una sau mai multe reguli din pagina Reguli recomandări. Importul folosește append merge.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4">
+              {ruleImportError ? <div className="text-destructive text-sm">{ruleImportError}</div> : null}
+
+              {isRuleImportLoading ? (
+                <div className="text-muted-foreground text-sm">Se încarcă regulile...</div>
+              ) : ruleSets.length === 0 ? (
+                <div className="text-muted-foreground text-sm">Nu există reguli reutilizabile disponibile.</div>
+              ) : (
+                <ScrollArea className="max-h-[420px] rounded-md border">
+                  <div className="space-y-2 p-3">
+                    {ruleSets.map((rule) => {
+                      const source = getRuleScenario(rule);
+                      const isChecked = selectedRuleIdSet.has(rule.id);
+                      const summaryScenario: ScenarioDraft = {
+                        id: rule.id,
+                        active: source?.active ?? true,
+                        order: source?.order ?? 0,
+                        explanationTemplate: source?.explanationTemplate ?? "",
+                        conditions: buildConditionMap(vocabularyKeys, source?.conditions),
+                      };
+                      return (
+                        <div
+                          key={rule.id}
+                          className={`flex items-start gap-3 rounded-md border p-3 ${source ? "" : "opacity-60"}`}
+                        >
+                          <Checkbox
+                            checked={isChecked}
+                            onCheckedChange={() => toggleRuleImportSelection(rule.id)}
+                            disabled={!source}
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="font-medium text-sm">{rule.title}</div>
+                            <div className="text-muted-foreground text-xs">
+                              {source
+                                ? formatScenarioSummary(summaryScenario, sortedVocabularyCategories)
+                                : "Regula nu are scenariu valid."}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </ScrollArea>
+              )}
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Button asChild type="button" variant="outline" size="sm">
+                  <Link href="/dashboard/recommendation-rules">Gestionează reguli</Link>
+                </Button>
+                <div className="flex items-center gap-2">
+                  <Button type="button" variant="outline" onClick={() => setIsRuleImportOpen(false)}>
+                    Anulează
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={handleImportSelectedRules}
+                    disabled={isRuleImportApplying || selectedRuleIds.length === 0}
+                  >
+                    {isRuleImportApplying ? "Se importă..." : `Importă (${selectedRuleIds.length})`}
+                  </Button>
+                </div>
+              </div>
+            </div>
           </DialogContent>
         </Dialog>
 

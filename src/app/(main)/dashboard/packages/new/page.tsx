@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { PackageForm } from "@/components/mybutterfly/packages/package-form";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -13,9 +13,11 @@ import type { Product, WithId } from "@/lib/firestore/types";
 
 export default function NewPackagePage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [products, setProducts] = useState<WithId<Product>[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const presetImportRuleId = searchParams.get("importRuleId");
 
   useEffect(() => {
     const load = async () => {
@@ -60,6 +62,7 @@ export default function NewPackagePage() {
       <PackageForm
         products={products}
         defaultMode="custom"
+        presetImportRuleId={presetImportRuleId}
         onSubmit={async (values) => {
           await createPackage(values);
           router.push("/dashboard/packages");

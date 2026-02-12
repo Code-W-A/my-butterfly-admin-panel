@@ -1485,9 +1485,9 @@ export default function ProductsPage() {
             </div>
 
             <div className="flex min-h-0 flex-col gap-3">
-              <div className="space-y-2">
+              <div className="flex shrink-0 flex-col gap-2">
                 <div className="font-medium text-sm">Reguli disponibile</div>
-                <ScrollArea className="max-h-[260px] rounded-md border">
+                <ScrollArea className="h-[260px] overflow-hidden rounded-md border">
                   <div className="space-y-2 p-3">
                     {isAssignLoading ? (
                       <div className="text-muted-foreground text-sm">Se încarcă regulile...</div>

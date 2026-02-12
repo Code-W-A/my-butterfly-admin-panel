@@ -261,7 +261,7 @@ export default function RecommendationRulesPage() {
         <div>
           <h1 className="font-semibold text-2xl">Reguli recomandări</h1>
           <p className="text-muted-foreground text-sm">
-            Creează reguli reutilizabile pe care le poți atribui produselor.
+            Creează reguli reutilizabile pe care le poți atribui produselor și pachetelor.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -326,6 +326,11 @@ export default function RecommendationRulesPage() {
                             Leagă produse
                           </Link>
                         </Button>
+                        <Button asChild variant="outline" size="sm">
+                          <Link prefetch={false} href={`/dashboard/packages/new?importRuleId=${item.id}`}>
+                            Leagă pachete
+                          </Link>
+                        </Button>
                         <Button type="button" variant="outline" size="sm" onClick={() => openEdit(item)}>
                           Editează
                         </Button>
@@ -352,7 +357,9 @@ export default function RecommendationRulesPage() {
         <DialogContent className="sm:max-w-5xl">
           <DialogHeader>
             <DialogTitle>{editingRuleSet ? "Editează reguli" : "Creează reguli"}</DialogTitle>
-            <DialogDescription>Regulile pot fi importate și atribuite rapid produselor.</DialogDescription>
+            <DialogDescription>
+              Regulile pot fi importate și atribuite rapid produselor și pachetelor.
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             {formError ? <div className="text-destructive text-sm">{formError}</div> : null}

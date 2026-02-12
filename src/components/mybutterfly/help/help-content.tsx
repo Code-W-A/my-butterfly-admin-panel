@@ -483,10 +483,11 @@ export const HELP_CONTENT: Record<HelpKey, { title: string; sections: HelpSectio
         ],
       },
       {
-        title: "Cum legi reguli de produse",
+        title: "Cum legi reguli de produse și pachete",
         bullets: [
           "„Leagă produse” te duce în lista de produse cu dialogul de atribuire, ca să selectezi produsele țintă.",
-          "Atribuirea este de tip merge: regulile selectate se adaugă peste scenariile existente ale produsului (nu șterg automat).",
+          "„Leagă pachete” te duce în creare pachet cu regula presetată pentru import direct în scenarii.",
+          "Atribuirea/importul este de tip merge: regulile selectate se adaugă peste scenariile existente ale produsului/pachetului (nu șterg automat).",
           "Poți previzualiza și edita o regulă înainte de atribuire (din dialogul de previzualizare din Produse).",
         ],
       },
