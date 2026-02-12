@@ -181,8 +181,8 @@ export default function SettingsPage() {
             <Button type="button" onClick={handleSave} disabled={isSaving || isLoading || isRecalculating}>
               {isSaving ? "Se salvează..." : "Salvează"}
             </Button>
-            {/* 
-            RAMANE COMENTAT SI SCOATEM LA NEVOIE
+
+            {/* RAMANE COMENTAT SI SCOATEM LA NEVOIE */}
             <Button
               type="button"
               variant="outline"
@@ -190,7 +190,7 @@ export default function SettingsPage() {
               disabled={isRecalculating || isLoading || isSaving}
             >
               {isRecalculating ? "Se recalculează..." : "Recalculează prețuri PrestaShop (RON)"}
-            </Button> */}
+            </Button>
           </div>
 
           {recalculationSummary ? (

@@ -6,7 +6,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
-import { Loader2, Package, Search, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Package, Search, X } from "lucide-react";
 
 import { VocabularyMultiSelect } from "@/components/mybutterfly/forms/vocabulary-multi-select";
 import { PageHelpDialog } from "@/components/mybutterfly/help/page-help-dialog";
@@ -41,6 +41,7 @@ import { convertEurToRonWithVat, normalizePricingConfig, type PricingConfig } fr
 
 const SKELETON_ROWS = ["s1", "s2", "s3", "s4", "s5", "s6"];
 const IMPORT_CONCURRENCY = 4;
+const PRODUCTS_PAGE_SIZE = 20;
 
 type PrestashopListItem = {
   id: string;
@@ -72,6 +73,11 @@ type ScenarioDraft = {
   order: number;
   explanationTemplate: string;
   conditions: Record<string, string[]>;
+};
+
+type PageCacheEntry = {
+  items: WithId<Product>[];
+  nextCursor?: unknown;
 };
 
 const generateClientId = () => {
@@ -171,10 +177,12 @@ export default function ProductsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [isSearchLoading, setIsSearchLoading] = useState(false);
-  const [cursor, setCursor] = useState<unknown | undefined>(undefined);
-  const [hasMore, setHasMore] = useState(true);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [pageCache, setPageCache] = useState<Record<number, PageCacheEntry>>({});
   const [error, setError] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [importQuery, setImportQuery] = useState("");
   const [importItems, setImportItems] = useState<PrestashopListItem[]>([]);
@@ -222,6 +230,40 @@ export default function ProductsPage() {
   const existingIdSet = useMemo(() => importExistingIds, [importExistingIds]);
   const assignSelectedIdSet = useMemo(() => new Set(assignSelectedIds), [assignSelectedIds]);
   const assignRuleIdSet = useMemo(() => new Set(assignRuleIds), [assignRuleIds]);
+  const selectedProductIdSet = useMemo(() => new Set(selectedProductIds), [selectedProductIds]);
+
+  const loadedPageIndexes = useMemo(
+    () =>
+      Object.keys(pageCache)
+        .map(Number)
+        .sort((a, b) => a - b),
+    [pageCache],
+  );
+  const lastLoadedPageIndex = loadedPageIndexes.length ? loadedPageIndexes[loadedPageIndexes.length - 1] : 0;
+  const currentPage = pageCache[pageIndex];
+  const hasNextPage = Boolean(pageCache[pageIndex + 1]) || Boolean(currentPage?.nextCursor);
+  const pageButtons = useMemo(() => {
+    const base = loadedPageIndexes.length ? [...loadedPageIndexes] : [0];
+    const maxIndex = base[base.length - 1] ?? 0;
+    if (pageCache[maxIndex]?.nextCursor && !base.includes(maxIndex + 1)) {
+      base.push(maxIndex + 1);
+    }
+    return base;
+  }, [loadedPageIndexes, pageCache]);
+
+  const removeFromPageCache = useCallback((deletedIds: Set<string>) => {
+    setPageCache((prev) => {
+      const next: Record<number, PageCacheEntry> = {};
+      Object.entries(prev).forEach(([key, entry]) => {
+        const index = Number(key);
+        next[index] = {
+          ...entry,
+          items: entry.items.filter((product) => !deletedIds.has(product.id)),
+        };
+      });
+      return next;
+    });
+  }, []);
 
   const loadFirstPage = useCallback(async () => {
     // #region agent log
@@ -245,10 +287,11 @@ export default function ProductsPage() {
     try {
       setError(null);
       setIsLoading(true);
-      const { items: data, cursor: nextCursor } = await listProductsPage({ pageSize: 20, activeOnly });
+      const { items: data, cursor: nextCursor } = await listProductsPage({ pageSize: PRODUCTS_PAGE_SIZE, activeOnly });
+      const firstPage: PageCacheEntry = { items: data, nextCursor };
+      setPageCache({ 0: firstPage });
+      setPageIndex(0);
       setItems(data);
-      setCursor(nextCursor);
-      setHasMore(Boolean(nextCursor));
       setIsLoading(false);
       // #region agent log
       fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
@@ -294,23 +337,46 @@ export default function ProductsPage() {
     }
   }, [activeOnly]);
 
-  const loadMore = async () => {
-    if (!hasMore || isLoadingMore) return;
-    try {
-      setIsLoadingMore(true);
-      const { items: data, cursor: nextCursor } = await listProductsPage({
-        pageSize: 20,
-        activeOnly,
-        cursor: cursor as never,
-      });
-      setItems((prev) => [...prev, ...data]);
-      setCursor(nextCursor);
-      setHasMore(Boolean(nextCursor));
-      setIsLoadingMore(false);
-    } catch (err) {
-      logFirebaseError("Products: loadMore", err);
-      setIsLoadingMore(false);
-    }
+  const goToPage = useCallback(
+    async (targetPage: number) => {
+      if (targetPage < 0 || isLoadingMore) return;
+      const cachedPage = pageCache[targetPage];
+      if (cachedPage) {
+        setPageIndex(targetPage);
+        setItems(cachedPage.items);
+        return;
+      }
+      if (targetPage !== lastLoadedPageIndex + 1) return;
+      const previousPage = pageCache[targetPage - 1];
+      if (!previousPage?.nextCursor) return;
+      try {
+        setIsLoadingMore(true);
+        const { items: data, cursor: nextCursor } = await listProductsPage({
+          pageSize: PRODUCTS_PAGE_SIZE,
+          activeOnly,
+          cursor: previousPage.nextCursor as never,
+        });
+        const nextPage: PageCacheEntry = { items: data, nextCursor };
+        setPageCache((prev) => ({ ...prev, [targetPage]: nextPage }));
+        setPageIndex(targetPage);
+        setItems(data);
+      } catch (err) {
+        logFirebaseError("Products: goToPage", err);
+      } finally {
+        setIsLoadingMore(false);
+      }
+    },
+    [activeOnly, isLoadingMore, lastLoadedPageIndex, pageCache],
+  );
+
+  const goPrevPage = () => {
+    if (pageIndex <= 0) return;
+    void goToPage(pageIndex - 1);
+  };
+
+  const goNextPage = () => {
+    if (!hasNextPage) return;
+    void goToPage(pageIndex + 1);
   };
 
   const loadAllProducts = useCallback(async () => {
@@ -396,12 +462,65 @@ export default function ProductsPage() {
       setIsDeleting(item.id);
       await deleteProductWithImages(item);
       setItems((prev) => prev.filter((p) => p.id !== item.id));
+      setAllItems((prev) => (prev ? prev.filter((p) => p.id !== item.id) : prev));
+      removeFromPageCache(new Set([item.id]));
+      setSelectedProductIds((prev) => prev.filter((id) => id !== item.id));
     } catch (err) {
       logFirebaseError("Products: delete", err);
       const info = getFirebaseErrorInfo(err);
       setError(`${info.code ? `Cod: ${info.code}. ` : ""}${info.message}`);
     } finally {
       setIsDeleting(null);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedProductIds.length === 0 || isBulkDeleting) return;
+    const source = allItems ?? items;
+    const byId = new Map(source.map((product) => [product.id, product] as const));
+    const targets = selectedProductIds.map((id) => byId.get(id)).filter(Boolean) as WithId<Product>[];
+    if (targets.length === 0) {
+      setSelectedProductIds([]);
+      return;
+    }
+    if (
+      !window.confirm(
+        `Ștergi ${targets.length} produse selectate? Imaginile asociate vor fi șterse din Storage unde este cazul.`,
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setError(null);
+      setIsBulkDeleting(true);
+      const settled = await runWithConcurrency(targets, 4, async (product) => {
+        await deleteProductWithImages(product);
+        return product.id;
+      });
+      const deletedIds = new Set(
+        settled
+          .filter((entry): entry is PromiseFulfilledResult<string> => entry.status === "fulfilled")
+          .map((entry) => entry.value),
+      );
+      const failedCount = settled.length - deletedIds.size;
+      setItems((prev) => prev.filter((product) => !deletedIds.has(product.id)));
+      setAllItems((prev) => (prev ? prev.filter((product) => !deletedIds.has(product.id)) : prev));
+      removeFromPageCache(deletedIds);
+      setSelectedProductIds((prev) => prev.filter((id) => !deletedIds.has(id)));
+      if (failedCount > 0) {
+        setError(
+          `Au fost șterse ${deletedIds.size} produse, dar ${failedCount} ${
+            failedCount === 1 ? "produs a eșuat" : "produse au eșuat"
+          }.`,
+        );
+      }
+    } catch (err) {
+      logFirebaseError("Products: bulkDelete", err);
+      const info = getFirebaseErrorInfo(err);
+      setError(`${info.code ? `Cod: ${info.code}. ` : ""}${info.message}`);
+    } finally {
+      setIsBulkDeleting(false);
     }
   };
 
@@ -800,6 +919,40 @@ export default function ProductsPage() {
     return next;
   }, [sort, visibleItems]);
 
+  const visibleIds = useMemo(() => sortedVisibleItems.map((item) => item.id), [sortedVisibleItems]);
+  const visibleSelectedCount = useMemo(
+    () => visibleIds.reduce((count, id) => count + (selectedProductIdSet.has(id) ? 1 : 0), 0),
+    [selectedProductIdSet, visibleIds],
+  );
+  const visibleSelectionState: boolean | "indeterminate" =
+    visibleIds.length === 0
+      ? false
+      : visibleSelectedCount === 0
+        ? false
+        : visibleSelectedCount === visibleIds.length
+          ? true
+          : "indeterminate";
+
+  const toggleProductSelection = (id: string, checked: boolean) => {
+    setSelectedProductIds((prev) => {
+      if (checked) {
+        if (prev.includes(id)) return prev;
+        return [...prev, id];
+      }
+      return prev.filter((current) => current !== id);
+    });
+  };
+
+  const toggleSelectVisibleProducts = (checked: boolean) => {
+    setSelectedProductIds((prev) => {
+      if (checked) {
+        return [...new Set([...prev, ...visibleIds])];
+      }
+      const visibleSet = new Set(visibleIds);
+      return prev.filter((id) => !visibleSet.has(id));
+    });
+  };
+
   useEffect(() => {
     // #region agent log
     fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
@@ -846,6 +999,16 @@ export default function ProductsPage() {
           <Button type="button" variant="outline" onClick={loadFirstPage} disabled={isLoading}>
             Reîmprospătează
           </Button>
+          {selectedProductIds.length > 0 ? (
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={handleBulkDelete}
+              disabled={isBulkDeleting || isDeleting !== null}
+            >
+              {isBulkDeleting ? "Se șterg..." : `Șterge selectate (${selectedProductIds.length})`}
+            </Button>
+          ) : null}
           <Button type="button" variant="outline" onClick={() => setIsImportOpen(true)}>
             Importă din PrestaShop
           </Button>
@@ -882,6 +1045,13 @@ export default function ProductsPage() {
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-12">
+                <Checkbox
+                  checked={visibleSelectionState}
+                  onCheckedChange={(checked) => toggleSelectVisibleProducts(checked === true)}
+                  aria-label="Selectează produsele vizibile"
+                />
+              </TableHead>
               <SortableTableHead sortKey="name" sort={sort} onSortChange={setSort}>
                 Nume
               </SortableTableHead>
@@ -901,8 +1071,9 @@ export default function ProductsPage() {
             {isLoading ? (
               SKELETON_ROWS.map((rowId) => (
                 <TableRow key={rowId}>
-                  <TableCell colSpan={5}>
-                    <div className="grid gap-3 md:grid-cols-5">
+                  <TableCell colSpan={6}>
+                    <div className="grid gap-3 md:grid-cols-6">
+                      <Skeleton className="h-4 w-4" />
                       <Skeleton className="h-4 w-40" />
                       <Skeleton className="h-4 w-24" />
                       <Skeleton className="h-4 w-24" />
@@ -914,19 +1085,26 @@ export default function ProductsPage() {
               ))
             ) : isSearching && (isSearchLoading || !allItems) ? (
               <TableRow>
-                <TableCell colSpan={5} className="text-muted-foreground text-sm">
+                <TableCell colSpan={6} className="text-muted-foreground text-sm">
                   Se caută produse...
                 </TableCell>
               </TableRow>
             ) : visibleItems.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} className="text-muted-foreground text-sm">
+                <TableCell colSpan={6} className="text-muted-foreground text-sm">
                   Nu s-au găsit produse.
                 </TableCell>
               </TableRow>
             ) : (
               sortedVisibleItems.map((item) => (
                 <TableRow key={item.id}>
+                  <TableCell>
+                    <Checkbox
+                      checked={selectedProductIdSet.has(item.id)}
+                      onCheckedChange={(checked) => toggleProductSelection(item.id, checked === true)}
+                      aria-label={`Selectează produsul ${item.name}`}
+                    />
+                  </TableCell>
                   <TableCell className="font-medium">{item.name}</TableCell>
                   <TableCell>{item.brand ?? "—"}</TableCell>
                   <TableCell>
@@ -935,7 +1113,7 @@ export default function ProductsPage() {
                   <TableCell>{item.active ? "Da" : "Nu"}</TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-2">
-                      <Button asChild variant="outline" size="sm" disabled={isDeleting === item.id}>
+                      <Button asChild variant="outline" size="sm" disabled={isDeleting === item.id || isBulkDeleting}>
                         <Link prefetch={false} href={`/dashboard/products/${item.id}`}>
                           Editează
                         </Link>
@@ -945,7 +1123,7 @@ export default function ProductsPage() {
                         variant="destructive"
                         size="sm"
                         onClick={() => onDelete(item)}
-                        disabled={isDeleting === item.id}
+                        disabled={isDeleting === item.id || isBulkDeleting}
                       >
                         {isDeleting === item.id ? "Se șterge..." : "Șterge"}
                       </Button>
@@ -960,11 +1138,49 @@ export default function ProductsPage() {
       {isSearching ? (
         <div className="text-muted-foreground text-sm">Se afișează rezultatele căutării.</div>
       ) : (
-        <div className="flex items-center justify-between text-muted-foreground text-sm">
-          <span>Se afișează rezultatele din pagina curentă.</span>
-          <Button type="button" variant="outline" onClick={loadMore} disabled={!hasMore || isLoadingMore}>
-            {isLoadingMore ? "Se încarcă..." : hasMore ? "Încarcă mai multe" : "Nu mai sunt rezultate"}
-          </Button>
+        <div className="flex flex-col gap-3 text-muted-foreground text-sm md:flex-row md:items-center md:justify-between">
+          <span>
+            Pagina {pageIndex + 1}
+            {isLoadingMore ? " • se încarcă..." : ""}
+          </span>
+          <div className="flex items-center gap-1">
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              onClick={goPrevPage}
+              disabled={pageIndex === 0 || isLoadingMore}
+              aria-label="Pagina anterioară"
+            >
+              <ChevronLeft className="size-4" />
+            </Button>
+            {pageButtons.map((index) => {
+              const isLoaded = Boolean(pageCache[index]);
+              return (
+                <Button
+                  key={index}
+                  type="button"
+                  variant={index === pageIndex ? "default" : "outline"}
+                  size="icon"
+                  onClick={() => void goToPage(index)}
+                  disabled={isLoadingMore || (!isLoaded && index !== lastLoadedPageIndex + 1)}
+                  aria-label={`Pagina ${index + 1}`}
+                >
+                  {index + 1}
+                </Button>
+              );
+            })}
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              onClick={goNextPage}
+              disabled={!hasNextPage || isLoadingMore}
+              aria-label="Pagina următoare"
+            >
+              <ChevronRight className="size-4" />
+            </Button>
+          </div>
         </div>
       )}
 

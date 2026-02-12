@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import Link from "next/link";
+
+import { ChevronLeft, ChevronRight } from "lucide-react";
 
 import { PageHelpDialog } from "@/components/mybutterfly/help/page-help-dialog";
 import { Button } from "@/components/ui/button";
@@ -19,6 +21,10 @@ import { listQuestionnaires } from "@/lib/firestore/questionnaires";
 import type { Questionnaire, QuestionnaireCompletion, WithId } from "@/lib/firestore/types";
 
 type CompletionItem = WithId<QuestionnaireCompletion>;
+type PageCacheEntry = {
+  items: CompletionItem[];
+  nextCursor?: unknown;
+};
 
 type DateRange = {
   from?: string;
@@ -31,8 +37,8 @@ export default function QuestionnaireCompletionsPage() {
   const [questionnaireId, setQuestionnaireId] = useState<string>("all");
   const [dateRange, setDateRange] = useState<DateRange>({});
   const [appliedRange, setAppliedRange] = useState<DateRange>({});
-  const [cursor, setCursor] = useState<unknown | undefined>(undefined);
-  const [hasMore, setHasMore] = useState(true);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [pageCache, setPageCache] = useState<Record<number, PageCacheEntry>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,57 +56,26 @@ export default function QuestionnaireCompletionsPage() {
     return new Date(`${appliedRange.to}T00:00:00.000Z`);
   }, [appliedRange.to]);
 
-  useEffect(() => {
-    const loadFirstPage = async () => {
-      try {
-        setError(null);
-        setIsLoading(true);
-        const [{ items: data, cursor: nextCursor }, questionnairesData] = await Promise.all([
-          listQuestionnaireCompletionsPage({
-            questionnaireId: questionnaireId === "all" ? undefined : questionnaireId,
-            since: appliedSince,
-            untilExclusive: appliedUntilExclusive,
-            pageSize: 20,
-          }),
-          listQuestionnaires(),
-        ]);
-        setItems(data);
-        setCursor(nextCursor);
-        setHasMore(Boolean(nextCursor));
-        setQuestionnaires(questionnairesData);
-        setIsLoading(false);
-      } catch (err) {
-        logFirebaseError("Completions: loadFirstPage", err);
-        const info = getFirebaseErrorInfo(err);
-        setError(`${info.code ? `Cod: ${info.code}. ` : ""}${info.message}`);
-        setIsLoading(false);
-      }
-    };
-    loadFirstPage();
-  }, [questionnaireId, appliedSince, appliedUntilExclusive]);
-
-  const loadMore = async () => {
-    if (!hasMore || isLoadingMore) return;
-    try {
-      setIsLoadingMore(true);
-      const { items: data, cursor: nextCursor } = await listQuestionnaireCompletionsPage({
-        questionnaireId: questionnaireId === "all" ? undefined : questionnaireId,
-        since: appliedSince,
-        untilExclusive: appliedUntilExclusive,
-        pageSize: 20,
-        cursor: cursor as never,
-      });
-      setItems((prev) => [...prev, ...data]);
-      setCursor(nextCursor);
-      setHasMore(Boolean(nextCursor));
-      setIsLoadingMore(false);
-    } catch (err) {
-      logFirebaseError("Completions: loadMore", err);
-      setIsLoadingMore(false);
+  const loadedPageIndexes = useMemo(
+    () =>
+      Object.keys(pageCache)
+        .map(Number)
+        .sort((a, b) => a - b),
+    [pageCache],
+  );
+  const lastLoadedPageIndex = loadedPageIndexes.length ? loadedPageIndexes[loadedPageIndexes.length - 1] : 0;
+  const currentPage = pageCache[pageIndex];
+  const hasNextPage = Boolean(pageCache[pageIndex + 1]) || Boolean(currentPage?.nextCursor);
+  const pageButtons = useMemo(() => {
+    const base = loadedPageIndexes.length ? [...loadedPageIndexes] : [0];
+    const maxIndex = base[base.length - 1] ?? 0;
+    if (pageCache[maxIndex]?.nextCursor && !base.includes(maxIndex + 1)) {
+      base.push(maxIndex + 1);
     }
-  };
+    return base;
+  }, [loadedPageIndexes, pageCache]);
 
-  const handleRefresh = async () => {
+  const loadFirstPage = useCallback(async () => {
     try {
       setError(null);
       setIsLoading(true);
@@ -113,17 +88,70 @@ export default function QuestionnaireCompletionsPage() {
         }),
         listQuestionnaires(),
       ]);
+      const firstPage: PageCacheEntry = { items: data, nextCursor };
+      setPageCache({ 0: firstPage });
+      setPageIndex(0);
       setItems(data);
-      setCursor(nextCursor);
-      setHasMore(Boolean(nextCursor));
       setQuestionnaires(questionnairesData);
       setIsLoading(false);
     } catch (err) {
-      logFirebaseError("Completions: refresh", err);
+      logFirebaseError("Completions: loadFirstPage", err);
       const info = getFirebaseErrorInfo(err);
       setError(`${info.code ? `Cod: ${info.code}. ` : ""}${info.message}`);
       setIsLoading(false);
     }
+  }, [appliedSince, appliedUntilExclusive, questionnaireId]);
+
+  useEffect(() => {
+    void loadFirstPage();
+  }, [loadFirstPage]);
+
+  const goToPage = useCallback(
+    async (targetPage: number) => {
+      if (targetPage < 0 || isLoadingMore) return;
+      const cachedPage = pageCache[targetPage];
+      if (cachedPage) {
+        setPageIndex(targetPage);
+        setItems(cachedPage.items);
+        return;
+      }
+      if (targetPage !== lastLoadedPageIndex + 1) return;
+      const previousPage = pageCache[targetPage - 1];
+      if (!previousPage?.nextCursor) return;
+      try {
+        setIsLoadingMore(true);
+        const { items: data, cursor: nextCursor } = await listQuestionnaireCompletionsPage({
+          questionnaireId: questionnaireId === "all" ? undefined : questionnaireId,
+          since: appliedSince,
+          untilExclusive: appliedUntilExclusive,
+          pageSize: 20,
+          cursor: previousPage.nextCursor as never,
+        });
+        const nextPage: PageCacheEntry = { items: data, nextCursor };
+        setPageCache((prev) => ({ ...prev, [targetPage]: nextPage }));
+        setPageIndex(targetPage);
+        setItems(data);
+      } catch (err) {
+        logFirebaseError("Completions: goToPage", err);
+      } finally {
+        setIsLoadingMore(false);
+      }
+    },
+    [appliedSince, appliedUntilExclusive, isLoadingMore, lastLoadedPageIndex, pageCache, questionnaireId],
+  );
+
+  const goPrevPage = () => {
+    if (pageIndex <= 0) return;
+    void goToPage(pageIndex - 1);
+  };
+
+  const goNextPage = () => {
+    if (!hasNextPage) return;
+    void goToPage(pageIndex + 1);
+  };
+
+  const handleRefresh = async () => {
+    await loadFirstPage();
   };
 
   const questionnaireTitle = useMemo(() => {
@@ -170,6 +198,17 @@ export default function QuestionnaireCompletionsPage() {
       setIsDeleting(item.id);
       await deleteQuestionnaireCompletion(item.id);
       setItems((prev) => prev.filter((entry) => entry.id !== item.id));
+      setPageCache((prev) => {
+        const next: Record<number, PageCacheEntry> = {};
+        Object.entries(prev).forEach(([key, entry]) => {
+          const index = Number(key);
+          next[index] = {
+            ...entry,
+            items: entry.items.filter((completion) => completion.id !== item.id),
+          };
+        });
+        return next;
+      });
     } catch (err) {
       logFirebaseError("Completions: delete", err);
       const info = getFirebaseErrorInfo(err);
@@ -344,10 +383,49 @@ export default function QuestionnaireCompletionsPage() {
           </TableBody>
         </Table>
       </div>
-      <div className="flex items-center justify-end">
-        <Button type="button" variant="outline" onClick={loadMore} disabled={!hasMore || isLoadingMore}>
-          {isLoadingMore ? "Se încarcă..." : hasMore ? "Încarcă mai multe" : "Nu mai sunt rezultate"}
-        </Button>
+      <div className="flex flex-col gap-3 text-muted-foreground text-sm md:flex-row md:items-center md:justify-between">
+        <span>
+          Pagina {pageIndex + 1}
+          {isLoadingMore ? " • se încarcă..." : ""}
+        </span>
+        <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            onClick={goPrevPage}
+            disabled={pageIndex === 0 || isLoadingMore}
+            aria-label="Pagina anterioară"
+          >
+            <ChevronLeft className="size-4" />
+          </Button>
+          {pageButtons.map((index) => {
+            const isLoaded = Boolean(pageCache[index]);
+            return (
+              <Button
+                key={index}
+                type="button"
+                variant={index === pageIndex ? "default" : "outline"}
+                size="icon"
+                onClick={() => void goToPage(index)}
+                disabled={isLoadingMore || (!isLoaded && index !== lastLoadedPageIndex + 1)}
+                aria-label={`Pagina ${index + 1}`}
+              >
+                {index + 1}
+              </Button>
+            );
+          })}
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            onClick={goNextPage}
+            disabled={!hasNextPage || isLoadingMore}
+            aria-label="Pagina următoare"
+          >
+            <ChevronRight className="size-4" />
+          </Button>
+        </div>
       </div>
     </div>
   );
