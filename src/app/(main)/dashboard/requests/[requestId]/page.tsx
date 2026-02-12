@@ -299,6 +299,18 @@ export default function RequestDetailPage() {
     return entries.filter((entry) => entry.status !== "unknown").sort((a, b) => a.order - b.order);
   }, [questions, request]);
   const skippedList = useMemo(() => answersList.filter((entry) => entry.status === "skipped"), [answersList]);
+  const questionnaireKeys = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          questions
+            .filter((question) => question.active)
+            .map((question) => question.key)
+            .filter((key): key is string => Boolean(key)),
+        ),
+      ),
+    [questions],
+  );
   const matchPercentById = useMemo(() => {
     if (!request || combinedProducts.length === 0 || questions.length === 0) return new Map<string, number>();
     const input = buildRecommendationInput(questions, request.answers ?? {});
@@ -307,9 +319,15 @@ export default function RequestDetailPage() {
           .map((id) => questions.find((q) => q.id === id)?.key)
           .filter((key): key is string => Boolean(key))
       : undefined;
-    const matches = matchProductScenarios({ products: combinedProducts, input, minMatchPercent, askedKeys });
+    const matches = matchProductScenarios({
+      products: combinedProducts,
+      input,
+      minMatchPercent,
+      askedKeys,
+      questionnaireKeys,
+    });
     return new Map(matches.map((match) => [match.product.id, match.matchPercent]));
-  }, [combinedProducts, minMatchPercent, questions, request]);
+  }, [combinedProducts, minMatchPercent, questions, request, questionnaireKeys]);
   const packageMatchPercentById = useMemo(() => {
     if (!request || combinedPackages.length === 0 || combinedProducts.length === 0 || questions.length === 0) {
       return new Map<string, number>();
@@ -327,9 +345,10 @@ export default function RequestDetailPage() {
       input,
       minMatchPercent,
       askedKeys,
+      questionnaireKeys,
     });
     return new Map(matches.map((match) => [match.package.id, match.matchPercent]));
-  }, [combinedPackages, combinedProducts, minMatchPercent, questions, request]);
+  }, [combinedPackages, combinedProducts, minMatchPercent, questions, request, questionnaireKeys]);
 
   const load = useCallback(async () => {
     setIsLoading(true);

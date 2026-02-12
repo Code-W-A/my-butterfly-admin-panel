@@ -24,11 +24,11 @@ export function PageHelpDialog({ helpKey, triggerLabel = "Ajutor" }: PageHelpDia
           {triggerLabel}
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden sm:max-w-2xl">
+        <DialogHeader className="shrink-0">
           <DialogTitle>{content.title}</DialogTitle>
         </DialogHeader>
-        <ScrollArea className="max-h-[70vh] pr-4">
+        <ScrollArea className="min-h-0 flex-1 pr-4">
           <div className="space-y-6">
             {content.sections.map((section) => (
               <section key={section.title} className="space-y-2">

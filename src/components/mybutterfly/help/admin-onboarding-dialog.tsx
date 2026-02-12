@@ -111,11 +111,11 @@ export function AdminOnboardingDialog({
           {triggerLabel}
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-3xl">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden sm:max-w-3xl">
+        <DialogHeader className="shrink-0">
           <DialogTitle>Cum folosești Admin-ul (pas cu pas)</DialogTitle>
         </DialogHeader>
-        <ScrollArea className="max-h-[70vh] pr-4">
+        <ScrollArea className="min-h-0 flex-1 pr-4">
           <div className="space-y-6">
             <div className="text-muted-foreground text-sm">
               Începe cu Vocabulary, apoi Chestionar, apoi Reguli, apoi Produse, și verifică în Test recomandări.
@@ -141,7 +141,7 @@ export function AdminOnboardingDialog({
             ))}
           </div>
         </ScrollArea>
-        <DialogFooter className="gap-2 sm:gap-0">
+        <DialogFooter className="shrink-0 gap-2 sm:gap-0">
           <Button type="button" variant="outline" onClick={() => setOpen(false)}>
             Închide
           </Button>

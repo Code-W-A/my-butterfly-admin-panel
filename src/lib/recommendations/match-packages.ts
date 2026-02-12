@@ -28,7 +28,7 @@ export type PackageMatchDebug = {
     selected: string[];
     counted: boolean;
     matched: boolean;
-    status: "matched" | "unanswered" | "not_counted";
+    status: "matched" | "unanswered" | "not_counted" | "missing_in_questionnaire";
   }>;
 };
 
@@ -128,6 +128,7 @@ const calculateMatchPercent = (
   input: RecommendationInput,
   totalPrice: number,
   askedKeySet?: Set<string>,
+  questionnaireKeySet?: Set<string>,
   debug?: boolean,
   threshold?: number,
 ) => {
@@ -152,21 +153,31 @@ const calculateMatchPercent = (
     if (!Array.isArray(allowed) || allowed.length === 0) continue;
 
     const selected = selectForKey(key);
-    const counted = !askedKeySet || askedKeySet.has(key);
-    const matched = counted && selected.length > 0 && selected.some((value) => allowed.includes(value));
+    const missingInQuestionnaire = Boolean(questionnaireKeySet && !questionnaireKeySet.has(key));
+    const isAsked = !askedKeySet || askedKeySet.has(key);
+    const counted = missingInQuestionnaire || isAsked;
+    const matched =
+      counted && !missingInQuestionnaire && selected.length > 0 && selected.some((value) => allowed.includes(value));
     if (counted) {
       totalConditions += 1;
       if (matched) matchedConditions += 1;
     }
 
     if (debug) {
+      const status = missingInQuestionnaire
+        ? "missing_in_questionnaire"
+        : !isAsked
+          ? "not_counted"
+          : matched
+            ? "matched"
+            : "unanswered";
       conditionDebug.push({
         key,
         allowed: allowed.map(String),
         selected: selected.map(String),
         counted,
         matched,
-        status: !counted ? "not_counted" : matched ? "matched" : "unanswered",
+        status,
       });
     }
   }
@@ -247,11 +258,13 @@ export function matchPackageScenarios(params: {
   input: RecommendationInput;
   minMatchPercent?: number;
   askedKeys?: string[];
+  questionnaireKeys?: string[];
   debug?: boolean;
 }): PackageMatch[] {
   const threshold = Number.isFinite(params.minMatchPercent) ? (params.minMatchPercent as number) : 65;
   const preferenceKeys = getPreferenceKeys(params.input.preferences);
   const askedKeySet = params.askedKeys?.length ? new Set(params.askedKeys) : undefined;
+  const questionnaireKeySet = params.questionnaireKeys?.length ? new Set(params.questionnaireKeys) : undefined;
 
   const matches: PackageMatch[] = [];
   params.packages.forEach((pkg) => {
@@ -274,6 +287,7 @@ export function matchPackageScenarios(params: {
         params.input,
         totalPrice,
         askedKeySet,
+        questionnaireKeySet,
         params.debug,
         threshold,
       );

@@ -466,11 +466,20 @@ export default function RecommendationTestPage() {
                 .map((id) => itemsById[id]?.key)
                 .filter((key): key is string => Boolean(key))
             : undefined;
+          const questionnaireKeys = Array.from(
+            new Set(
+              items
+                .filter((question) => question.active)
+                .map((question) => question.key)
+                .filter(Boolean),
+            ),
+          );
           const nextProductMatches = matchProductScenarios({
             products,
             input: pendingSession.input,
             minMatchPercent,
             askedKeys,
+            questionnaireKeys,
             debug: isDebugEnabled,
           });
           const nextPackageMatches = matchPackageScenarios({
@@ -479,6 +488,7 @@ export default function RecommendationTestPage() {
             input: pendingSession.input,
             minMatchPercent,
             askedKeys,
+            questionnaireKeys,
             debug: isDebugEnabled,
           });
           const nextMode: ResultMode =
@@ -560,15 +570,28 @@ export default function RecommendationTestPage() {
   );
 
   const askedKeysForCurrent = useMemo(() => orderedQuestions.map((question) => question.key), [orderedQuestions]);
+  const questionnaireKeysForCurrent = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          questions
+            .filter((question) => question.active)
+            .map((question) => question.key)
+            .filter(Boolean),
+        ),
+      ),
+    [questions],
+  );
   const productMatches = useMemo(() => {
     return matchProductScenarios({
       products,
       input,
       minMatchPercent,
       askedKeys: askedKeysForCurrent,
+      questionnaireKeys: questionnaireKeysForCurrent,
       debug: isDebugEnabled,
     });
-  }, [products, input, minMatchPercent, askedKeysForCurrent]);
+  }, [products, input, minMatchPercent, askedKeysForCurrent, questionnaireKeysForCurrent]);
   const packageMatches = useMemo(() => {
     return matchPackageScenarios({
       packages,
@@ -576,9 +599,10 @@ export default function RecommendationTestPage() {
       input,
       minMatchPercent,
       askedKeys: askedKeysForCurrent,
+      questionnaireKeys: questionnaireKeysForCurrent,
       debug: isDebugEnabled,
     });
-  }, [packages, productsById, input, minMatchPercent, askedKeysForCurrent]);
+  }, [packages, productsById, input, minMatchPercent, askedKeysForCurrent, questionnaireKeysForCurrent]);
   const liveResultMode: ResultMode = packageMatches.length > 0 ? "packages" : "products";
   const liveProductMatches = liveResultMode === "products" ? productMatches : [];
   const livePackageMatches = liveResultMode === "packages" ? packageMatches : [];
@@ -923,6 +947,7 @@ export default function RecommendationTestPage() {
       input: session.input,
       minMatchPercent,
       askedKeys,
+      questionnaireKeys: questionnaireKeysForCurrent,
       debug: isDebugEnabled,
     });
     const nextPackageMatches = matchPackageScenarios({
@@ -931,6 +956,7 @@ export default function RecommendationTestPage() {
       input: session.input,
       minMatchPercent,
       askedKeys,
+      questionnaireKeys: questionnaireKeysForCurrent,
       debug: isDebugEnabled,
     });
     const nextMode: ResultMode =

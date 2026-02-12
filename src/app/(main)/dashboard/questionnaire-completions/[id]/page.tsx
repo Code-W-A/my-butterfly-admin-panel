@@ -249,6 +249,14 @@ export default function QuestionnaireCompletionDetailPage() {
                 .map((id) => questionsData.find((question) => question.id === id)?.key)
                 .filter((key): key is string => Boolean(key))
             : undefined;
+          const questionnaireKeys = Array.from(
+            new Set(
+              questionsData
+                .filter((question) => question.active)
+                .map((question) => question.key)
+                .filter((key): key is string => Boolean(key)),
+            ),
+          );
           const productsById = new Map(activeProducts.map((item) => [item.id, item]));
           const packageMatches = matchPackageScenarios({
             packages: activePackages,
@@ -256,6 +264,7 @@ export default function QuestionnaireCompletionDetailPage() {
             input,
             minMatchPercent,
             askedKeys,
+            questionnaireKeys,
           });
 
           if (packageMatches.length) {
@@ -279,6 +288,7 @@ export default function QuestionnaireCompletionDetailPage() {
               input,
               minMatchPercent,
               askedKeys,
+              questionnaireKeys,
             });
             const matchIds = productMatches.map((match) => match.product.id);
             const uniqueProducts = productMatches.map((match) => match.product);
@@ -381,6 +391,18 @@ export default function QuestionnaireCompletionDetailPage() {
 
   const displayedProducts = products.length ? products : computedProducts;
   const displayedPackages = packages.length ? packages : computedPackages;
+  const questionnaireKeys = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          questions
+            .filter((question) => question.active)
+            .map((question) => question.key)
+            .filter((key): key is string => Boolean(key)),
+        ),
+      ),
+    [questions],
+  );
   const packageProductsById = useMemo(
     () => new Map(packageProducts.map((product) => [product.id, product])),
     [packageProducts],
@@ -394,9 +416,15 @@ export default function QuestionnaireCompletionDetailPage() {
           .map((id) => questions.find((q) => q.id === id)?.key)
           .filter((key): key is string => Boolean(key))
       : undefined;
-    const matches = matchProductScenarios({ products: displayedProducts, input, minMatchPercent, askedKeys });
+    const matches = matchProductScenarios({
+      products: displayedProducts,
+      input,
+      minMatchPercent,
+      askedKeys,
+      questionnaireKeys,
+    });
     return new Map(matches.map((match) => [match.product.id, match.matchPercent]));
-  }, [completion, displayedProducts, minMatchPercent, questions]);
+  }, [completion, displayedProducts, minMatchPercent, questions, questionnaireKeys]);
   const packageMatchPercentById = useMemo(() => {
     if (!completion || displayedPackages.length === 0 || questions.length === 0) return new Map<string, number>();
     const input = buildRecommendationInput(questions, completion.answers ?? {});
@@ -415,9 +443,18 @@ export default function QuestionnaireCompletionDetailPage() {
       input,
       minMatchPercent,
       askedKeys,
+      questionnaireKeys,
     });
     return new Map(matches.map((match) => [match.package.id, match.matchPercent]));
-  }, [completion, displayedPackages, displayedProducts, minMatchPercent, packageProducts, questions]);
+  }, [
+    completion,
+    displayedPackages,
+    displayedProducts,
+    minMatchPercent,
+    packageProducts,
+    questions,
+    questionnaireKeys,
+  ]);
 
   const formatSkippedReason = (reason?: string) => {
     if (reason === "inactive") return "Întrebare inactivă";

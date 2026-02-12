@@ -746,12 +746,12 @@ export function ProductForm({
             if (!open) setRuleSetSelection([]);
           }}
         >
-          <DialogContent className="sm:max-w-3xl">
+          <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden sm:max-w-3xl">
             <DialogTitle>Importă reguli</DialogTitle>
             <DialogDescription>Alege unul sau mai multe seturi de reguli.</DialogDescription>
-            <div className="space-y-4">
+            <div className="flex min-h-0 flex-1 flex-col gap-4">
               {ruleSetError ? <div className="text-destructive text-sm">{ruleSetError}</div> : null}
-              <ScrollArea className="max-h-[360px] rounded-md border">
+              <ScrollArea className="min-h-0 flex-1 overflow-hidden rounded-md border">
                 <div className="space-y-3 p-4">
                   {isRuleSetLoading ? (
                     <div className="text-muted-foreground text-sm">Se încarcă seturile...</div>
@@ -791,7 +791,7 @@ export function ProductForm({
                   )}
                 </div>
               </ScrollArea>
-              <div className="flex items-center justify-end gap-2">
+              <div className="flex shrink-0 items-center justify-end gap-2">
                 <Button type="button" variant="outline" onClick={() => setIsRuleSetDialogOpen(false)}>
                   Anulează
                 </Button>

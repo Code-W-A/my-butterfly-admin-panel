@@ -1198,7 +1198,7 @@ export default function ProductsPage() {
           }
         }}
       >
-        <DialogContent className="!max-w-none sm:!max-w-none flex h-[95vh] w-[98vw] flex-col gap-4 p-6">
+        <DialogContent className="!max-w-none sm:!max-w-none flex h-[95vh] w-[98vw] flex-col gap-4 overflow-hidden p-6">
           <DialogHeader className="shrink-0">
             <DialogTitle>Importă produse din PrestaShop</DialogTitle>
             <DialogDescription>
@@ -1218,7 +1218,7 @@ export default function ProductsPage() {
                   className="h-11 pl-9"
                 />
               </div>
-              <ScrollArea className="min-h-0 flex-1 rounded-md border">
+              <ScrollArea className="min-h-0 flex-1 overflow-hidden rounded-md border">
                 <div className="space-y-3 p-4">
                   {isImportLoading ? (
                     <div className="flex flex-col items-center justify-center gap-3 py-12">
@@ -1312,7 +1312,7 @@ export default function ProductsPage() {
                   </Button>
                 ) : null}
               </div>
-              <ScrollArea className="min-h-0 flex-1 rounded-md border">
+              <ScrollArea className="min-h-0 flex-1 overflow-hidden rounded-md border">
                 <div className="space-y-3 p-4">
                   {importSelected.length === 0 ? (
                     <div className="text-muted-foreground text-sm">Alege produse din stânga.</div>
@@ -1379,7 +1379,7 @@ export default function ProductsPage() {
             </div>
           </div>
 
-          <div className="flex items-center justify-between">
+          <div className="flex shrink-0 items-center justify-between">
             <div className="text-muted-foreground text-xs">
               Produsele selectate vor fi create ca active, fără reguli și fără atribute.
             </div>
@@ -1406,7 +1406,7 @@ export default function ProductsPage() {
           }
         }}
       >
-        <DialogContent className="!max-w-none sm:!max-w-none flex h-[95vh] w-[98vw] flex-col gap-4 p-6">
+        <DialogContent className="!max-w-none sm:!max-w-none flex h-[95vh] w-[98vw] flex-col gap-4 overflow-hidden p-6">
           <DialogHeader className="shrink-0">
             <DialogTitle>Atribuire reguli</DialogTitle>
             <DialogDescription>
@@ -1427,7 +1427,7 @@ export default function ProductsPage() {
                   />
                 </div>
               </div>
-              <ScrollArea className="min-h-0 flex-1 rounded-md border">
+              <ScrollArea className="min-h-0 flex-1 overflow-hidden rounded-md border">
                 <div className="space-y-3 p-4">
                   {isAssignLoading ? (
                     <div className="flex flex-col items-center justify-center gap-3 py-12">
@@ -1540,7 +1540,7 @@ export default function ProductsPage() {
                   </Button>
                 ) : null}
               </div>
-              <ScrollArea className="min-h-0 flex-1 rounded-md border">
+              <ScrollArea className="min-h-0 flex-1 overflow-hidden rounded-md border">
                 <div className="space-y-3 p-4">
                   {assignSelectedItems.length === 0 ? (
                     <div className="text-muted-foreground text-sm">Alege produse din stânga.</div>
@@ -1600,7 +1600,7 @@ export default function ProductsPage() {
             </div>
           </div>
 
-          <div className="flex items-center justify-between">
+          <div className="flex shrink-0 items-center justify-between">
             <div className="text-muted-foreground text-xs">
               Regulile se vor adăuga peste cele deja existente pentru fiecare produs.
             </div>

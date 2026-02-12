@@ -269,7 +269,7 @@ function PackageProductPicker({
       )}
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="!max-w-none sm:!max-w-none flex h-[90vh] w-[95vw] flex-col gap-4 p-6">
+        <DialogContent className="!max-w-none sm:!max-w-none flex h-[90vh] w-[95vw] flex-col gap-4 overflow-hidden p-6">
           <DialogHeader className="shrink-0">
             <DialogTitle>{dialogTitle}</DialogTitle>
             <DialogDescription>{dialogDescription}</DialogDescription>
@@ -284,7 +284,7 @@ function PackageProductPicker({
             />
           </div>
 
-          <ScrollArea className="min-h-0 flex-1 rounded-md border">
+          <ScrollArea className="min-h-0 flex-1 overflow-hidden rounded-md border">
             <div className="space-y-3 p-4">
               {filteredProducts.length === 0 ? (
                 <div className="flex flex-col items-center justify-center gap-3 py-12">
@@ -347,7 +347,7 @@ function PackageProductPicker({
             </div>
           </ScrollArea>
 
-          <div className="flex items-center justify-between">
+          <div className="flex shrink-0 items-center justify-between">
             <div className="text-muted-foreground text-xs">
               {selectedProduct ? `Selectat: ${selectedProduct.name}` : "Niciun produs selectat."}
             </div>
@@ -1113,15 +1113,15 @@ export function PackageForm({
             }
           }}
         >
-          <DialogContent className="sm:max-w-3xl">
-            <DialogHeader>
+          <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden sm:max-w-3xl">
+            <DialogHeader className="shrink-0">
               <DialogTitle>Importă reguli reutilizabile</DialogTitle>
               <DialogDescription>
                 Selectează una sau mai multe reguli din pagina Reguli recomandări. Importul folosește append merge.
               </DialogDescription>
             </DialogHeader>
 
-            <div className="space-y-4">
+            <div className="flex min-h-0 flex-1 flex-col gap-4">
               {ruleImportError ? <div className="text-destructive text-sm">{ruleImportError}</div> : null}
 
               {isRuleImportLoading ? (
@@ -1129,7 +1129,7 @@ export function PackageForm({
               ) : ruleSets.length === 0 ? (
                 <div className="text-muted-foreground text-sm">Nu există reguli reutilizabile disponibile.</div>
               ) : (
-                <ScrollArea className="max-h-[420px] rounded-md border">
+                <ScrollArea className="min-h-0 flex-1 overflow-hidden rounded-md border">
                   <div className="space-y-2 p-3">
                     {ruleSets.map((rule) => {
                       const source = getRuleScenario(rule);
@@ -1166,7 +1166,7 @@ export function PackageForm({
                 </ScrollArea>
               )}
 
-              <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
                 <Button asChild type="button" variant="outline" size="sm">
                   <Link href="/dashboard/recommendation-rules">Gestionează reguli</Link>
                 </Button>
