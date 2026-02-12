@@ -3,6 +3,7 @@ import type { Timestamp } from "firebase/firestore";
 export type Questionnaire = {
   active: boolean;
   title: string;
+  linkedRuleSetId?: string;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 };

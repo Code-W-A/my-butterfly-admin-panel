@@ -69,7 +69,7 @@ export async function getQuestionnaire(questionnaireId: string): Promise<WithId<
   return item;
 }
 
-export async function createQuestionnaire(data: Pick<Questionnaire, "title" | "active">) {
+export async function createQuestionnaire(data: Pick<Questionnaire, "title" | "active" | "linkedRuleSetId">) {
   const { db } = initFirebase();
   if (!db) throw new Error("Firestore not initialized.");
   const questionnairesCollection = collection(db, "questionnaires");

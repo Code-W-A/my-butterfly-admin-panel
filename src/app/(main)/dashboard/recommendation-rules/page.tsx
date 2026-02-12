@@ -331,6 +331,11 @@ export default function RecommendationRulesPage() {
                             Leagă pachete
                           </Link>
                         </Button>
+                        <Button asChild variant="outline" size="sm">
+                          <Link prefetch={false} href={`/dashboard/questionnaires/new?importRuleId=${item.id}`}>
+                            Leagă chestionar
+                          </Link>
+                        </Button>
                         <Button type="button" variant="outline" size="sm" onClick={() => openEdit(item)}>
                           Editează
                         </Button>

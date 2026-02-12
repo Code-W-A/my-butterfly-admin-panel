@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
@@ -43,8 +43,10 @@ const formatQuestionType = (type: QuestionnaireQuestion["type"]) => {
 
 export default function QuestionnaireDetailPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const params = useParams();
   const questionnaireId = params.id as string;
+  const generatedEmpty = searchParams.get("generated") === "0";
   const [questionnaire, setQuestionnaire] = useState<WithId<Questionnaire> | null>(null);
   const [questions, setQuestions] = useState<WithId<QuestionnaireQuestion>[]>([]);
   const [sort, setSort] = useState<SortState<"order" | "key" | "type" | "label" | "active">>({
@@ -136,6 +138,14 @@ export default function QuestionnaireDetailPage() {
 
   return (
     <div className="space-y-8">
+      {generatedEmpty ? (
+        <div className="rounded-md border bg-muted p-4 text-sm">
+          <div className="font-semibold">Draft generat</div>
+          <div className="text-muted-foreground">
+            S-au generat 0 întrebări din regula selectată. Adaugă manual întrebările lipsă (ex: buget).
+          </div>
+        </div>
+      ) : null}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="font-semibold text-2xl">Editează chestionarul</h1>
