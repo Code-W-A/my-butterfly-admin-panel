@@ -77,8 +77,7 @@ const isPackageShapeEligible = (pkg: WithId<RecommendationPackage>) => {
 
   if (items.length < 1 || items.length > 10) return false;
   if (items.some((item) => !item.productId?.trim())) return false;
-  const ids = items.map((item) => item.productId.trim());
-  return new Set(ids).size === ids.length;
+  return true;
 };
 
 const getPackageProducts = (

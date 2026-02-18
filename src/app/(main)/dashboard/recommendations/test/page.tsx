@@ -54,6 +54,10 @@ type VocabMap = Record<string, string>;
 type AnswerMap = Record<string, unknown>;
 type RangeAnswer = { min?: string; max?: string };
 type ResultMode = "packages" | "products";
+type SortMetric = "fit" | "price" | "speed" | "spin" | "control";
+type SortDirection = "asc" | "desc";
+type ProductMatchItem = ReturnType<typeof matchProductScenarios>[number];
+type PackageMatchItem = ReturnType<typeof matchPackageScenarios>[number];
 type HistorySession = {
   id: string;
   questionnaireId: string;
@@ -267,6 +271,31 @@ const formatPackageRole = (role?: string) => {
   return "Produs";
 };
 
+const compareProductBase = (a: ProductMatchItem, b: ProductMatchItem) => {
+  if (a.matchPercent !== b.matchPercent) return b.matchPercent - a.matchPercent;
+  if (a.fitScore !== b.fitScore) return b.fitScore - a.fitScore;
+  if (a.product.price !== b.product.price) return a.product.price - b.product.price;
+  return a.product.name.localeCompare(b.product.name);
+};
+
+const comparePackageBase = (a: PackageMatchItem, b: PackageMatchItem) => {
+  if (a.matchPercent !== b.matchPercent) return b.matchPercent - a.matchPercent;
+  if (a.fitScore !== b.fitScore) return b.fitScore - a.fitScore;
+  if (a.package.totalPrice !== b.package.totalPrice) return a.package.totalPrice - b.package.totalPrice;
+  return a.package.title.localeCompare(b.package.title);
+};
+
+const compareMetricValue = (a: number | undefined, b: number | undefined, direction: SortDirection) => {
+  const aMissing = a === undefined;
+  const bMissing = b === undefined;
+  if (aMissing && bMissing) return 0;
+  if (aMissing) return 1;
+  if (bMissing) return -1;
+  if (a === b) return 0;
+  const dir = direction === "asc" ? 1 : -1;
+  return dir * (a - b);
+};
+
 export default function RecommendationTestPage() {
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>("questionnaire");
@@ -292,7 +321,8 @@ export default function RecommendationTestPage() {
   const [selectedPackageMatch, setSelectedPackageMatch] = useState<ReturnType<typeof matchPackageScenarios>[0] | null>(
     null,
   );
-  const [sortMode, setSortMode] = useState<"fit" | "price">("fit");
+  const [sortMetric, setSortMetric] = useState<SortMetric>("fit");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [minMatchPercent, setMinMatchPercent] = useState<number>(65);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [history, setHistory] = useState<HistorySession[]>([]);
@@ -611,31 +641,53 @@ export default function RecommendationTestPage() {
   const currentPackageMatches = finalizedResultMode ? finalizedPackageMatches : livePackageMatches;
 
   const sortedProductMatches = useMemo(() => {
+    const dir = sortDirection === "asc" ? 1 : -1;
     const next = [...currentProductMatches];
-    if (sortMode === "price") {
-      next.sort((a, b) => a.product.price - b.product.price);
-      return next;
-    }
     next.sort((a, b) => {
-      if (a.matchPercent !== b.matchPercent) return b.matchPercent - a.matchPercent;
-      if (a.fitScore !== b.fitScore) return b.fitScore - a.fitScore;
-      return a.product.price - b.product.price;
+      if (sortMetric === "fit") {
+        if (a.matchPercent !== b.matchPercent) return dir * (a.matchPercent - b.matchPercent);
+        if (a.fitScore !== b.fitScore) return dir * (a.fitScore - b.fitScore);
+        return compareProductBase(a, b);
+      }
+      if (sortMetric === "price") {
+        if (a.product.price !== b.product.price) return dir * (a.product.price - b.product.price);
+        return compareProductBase(a, b);
+      }
+
+      const metricComparison = compareMetricValue(
+        a.product.attributes?.[sortMetric],
+        b.product.attributes?.[sortMetric],
+        sortDirection,
+      );
+      if (metricComparison !== 0) return metricComparison;
+      return compareProductBase(a, b);
     });
     return next;
-  }, [currentProductMatches, sortMode]);
+  }, [currentProductMatches, sortMetric, sortDirection]);
   const sortedPackageMatches = useMemo(() => {
+    const dir = sortDirection === "asc" ? 1 : -1;
     const next = [...currentPackageMatches];
-    if (sortMode === "price") {
-      next.sort((a, b) => a.package.totalPrice - b.package.totalPrice);
-      return next;
-    }
     next.sort((a, b) => {
-      if (a.matchPercent !== b.matchPercent) return b.matchPercent - a.matchPercent;
-      if (a.fitScore !== b.fitScore) return b.fitScore - a.fitScore;
-      return a.package.totalPrice - b.package.totalPrice;
+      if (sortMetric === "fit") {
+        if (a.matchPercent !== b.matchPercent) return dir * (a.matchPercent - b.matchPercent);
+        if (a.fitScore !== b.fitScore) return dir * (a.fitScore - b.fitScore);
+        return comparePackageBase(a, b);
+      }
+      if (sortMetric === "price") {
+        if (a.package.totalPrice !== b.package.totalPrice) return dir * (a.package.totalPrice - b.package.totalPrice);
+        return comparePackageBase(a, b);
+      }
+
+      const metricComparison = compareMetricValue(
+        a.package.attributes?.[sortMetric],
+        b.package.attributes?.[sortMetric],
+        sortDirection,
+      );
+      if (metricComparison !== 0) return metricComparison;
+      return comparePackageBase(a, b);
     });
     return next;
-  }, [currentPackageMatches, sortMode]);
+  }, [currentPackageMatches, sortMetric, sortDirection]);
 
   const debugPayload = useMemo(() => {
     if (!isDebugEnabled) return null;
@@ -983,6 +1035,22 @@ export default function RecommendationTestPage() {
     );
   };
 
+  const renderSpeedSpinControlBadges = (attributes?: { speed?: number; spin?: number; control?: number }) => {
+    const speed = attributes?.speed;
+    const spin = attributes?.spin;
+    const control = attributes?.control;
+    if (speed === undefined && spin === undefined && control === undefined) return null;
+
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-muted-foreground text-xs">Atribute:</span>
+        {speed !== undefined ? <Badge variant="outline">Viteză: {speed}</Badge> : null}
+        {spin !== undefined ? <Badge variant="outline">Spin: {spin}</Badge> : null}
+        {control !== undefined ? <Badge variant="outline">Control: {control}</Badge> : null}
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6">
       {error ? (
@@ -1307,21 +1375,35 @@ export default function RecommendationTestPage() {
               <CardTitle>Rezultate recomandări</CardTitle>
               <CardDescription>
                 {currentResultMode === "packages"
-                  ? "Pachete recomandate pe baza răspunsurilor tale. Dacă nu există pachete eligibile, se folosește fallback pe produse."
-                  : "Produse recomandate pe baza răspunsurilor tale (fallback). Poți sorta după potrivire sau preț."}
+                  ? "Pachete recomandate pe baza răspunsurilor tale. Poți sorta după potrivire, preț, viteză, spin sau control. Dacă nu există pachete eligibile, se folosește fallback pe produse."
+                  : "Produse recomandate pe baza răspunsurilor tale (fallback). Poți sorta după potrivire, preț, viteză, spin sau control."}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="flex flex-wrap items-center justify-between gap-4">
-                <div className="flex items-center gap-3">
-                  <Label>Sortare:</Label>
-                  <Select value={sortMode} onValueChange={(value) => setSortMode(value as "fit" | "price")}>
-                    <SelectTrigger className="w-[200px]">
+                <div className="flex flex-wrap items-center gap-3">
+                  <Label>Criteriu:</Label>
+                  <Select value={sortMetric} onValueChange={(value) => setSortMetric(value as SortMetric)}>
+                    <SelectTrigger className="w-[190px]">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="fit">Cel mai potrivit</SelectItem>
-                      <SelectItem value="price">Cel mai ieftin</SelectItem>
+                      <SelectItem value="fit">Potrivire</SelectItem>
+                      <SelectItem value="price">Preț</SelectItem>
+                      <SelectItem value="speed">Viteză</SelectItem>
+                      <SelectItem value="spin">Spin</SelectItem>
+                      <SelectItem value="control">Control</SelectItem>
+                    </SelectContent>
+                  </Select>
+
+                  <Label>Direcție:</Label>
+                  <Select value={sortDirection} onValueChange={(value) => setSortDirection(value as SortDirection)}>
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="asc">Crescător</SelectItem>
+                      <SelectItem value="desc">Descrescător</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1364,6 +1446,11 @@ export default function RecommendationTestPage() {
                                           ? "triple"
                                           : "custom"}
                                     </p>
+                                    {renderSpeedSpinControlBadges(match.package.attributes) ? (
+                                      <div className="mt-2">
+                                        {renderSpeedSpinControlBadges(match.package.attributes)}
+                                      </div>
+                                    ) : null}
                                   </div>
                                 </div>
                                 {match.scenario.explanationTemplate ? (
@@ -1472,6 +1559,11 @@ export default function RecommendationTestPage() {
                                     <p className="text-muted-foreground text-sm">
                                       {match.product.price} {match.product.currency}
                                     </p>
+                                    {renderSpeedSpinControlBadges(match.product.attributes) ? (
+                                      <div className="mt-2">
+                                        {renderSpeedSpinControlBadges(match.product.attributes)}
+                                      </div>
+                                    ) : null}
                                     {match.product.productUrl ? (
                                       <a
                                         href={match.product.productUrl}
@@ -1828,6 +1920,13 @@ export default function RecommendationTestPage() {
                       : "custom"}
                 </p>
               </div>
+
+              {renderSpeedSpinControlBadges(selectedPackageMatch.package.attributes) ? (
+                <div className="space-y-2">
+                  <h4 className="font-medium">Atribute pachet (informativ)</h4>
+                  {renderSpeedSpinControlBadges(selectedPackageMatch.package.attributes)}
+                </div>
+              ) : null}
 
               {selectedPackageMatch.scenario.explanationTemplate ? (
                 <div className="rounded-lg bg-muted p-4">

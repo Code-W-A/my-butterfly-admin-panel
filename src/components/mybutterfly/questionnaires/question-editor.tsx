@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { deleteField } from "firebase/firestore";
+import { Loader2 } from "lucide-react";
 import { useFieldArray, useForm } from "react-hook-form";
 import { z } from "zod";
 
@@ -185,14 +186,15 @@ export function QuestionEditor({
   });
 
   const typeValue = form.watch("type");
+  const isSubmitting = form.formState.isSubmitting;
   const requiresOptions = typeValue === "single_select" || typeValue === "multi_select";
   const isRangeType = typeValue === "range";
   const keyValue = form.watch("key");
   const rulesValue = form.watch("visibilityRules") ?? [];
   const [vocabularyCategories, setVocabularyCategories] = useState<WithId<VocabularyCategory>[]>([]);
   const vocabularyKeyValues = useMemo(() => vocabularyCategories.map((item) => item.key), [vocabularyCategories]);
-  const vocabularyKeyOptions = useMemo<VocabularyKeyOption[]>(
-    () => [
+  const vocabularyKeyOptions = useMemo<VocabularyKeyOption[]>(() => {
+    const base: VocabularyKeyOption[] = [
       ...vocabularyCategories
         .slice()
         .sort((a, b) => a.order - b.order)
@@ -202,9 +204,13 @@ export function QuestionEditor({
         })),
       ...(vocabularyKeyValues.includes("preferences") ? [] : [{ value: "preferences", label: "Preferințe" }]),
       ...(vocabularyKeyValues.includes("budget") ? [] : [{ value: "budget", label: "Buget" }]),
-    ],
-    [vocabularyCategories, vocabularyKeyValues],
-  );
+    ];
+    const currentKey = String(keyValue ?? "").trim();
+    if (currentKey && !base.some((option) => option.value === currentKey)) {
+      base.unshift({ value: currentKey, label: `${currentKey} (legacy)` });
+    }
+    return base;
+  }, [vocabularyCategories, vocabularyKeyValues, keyValue]);
   const isVocabularyKey = vocabularyKeyValues.includes(String(keyValue));
 
   const keyHelpText = useMemo(() => {
@@ -235,9 +241,6 @@ export function QuestionEditor({
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const prevKeyRef = useRef<string | null>(null);
-  const skipImportPromptRef = useRef(true);
-  const userChangedKeyRef = useRef(false);
-  const keySelectOpenedByUserRef = useRef(false);
 
   const conditionQuestions = useMemo(
     () =>
@@ -267,47 +270,8 @@ export function QuestionEditor({
 
   useEffect(() => {
     if (selected) {
-      // #region agent log
-      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          location: "question-editor.tsx:166",
-          message: "reset-from-selected",
-          data: {
-            selectedId: selected.id,
-            selectedKey: selected.key,
-            selectedType: selected.type,
-            optionsCount: (selected.options ?? []).length,
-          },
-          timestamp: Date.now(),
-          sessionId: "debug-session",
-          runId: "pre-fix",
-          hypothesisId: "H1",
-        }),
-      }).catch(() => {
-        /* no-op */
-      });
-      // #endregion
       const normalizedType = normalizeQuestionType(selected);
       const normalizedKey = normalizeQuestionKey(selected);
-      // #region agent log
-      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          location: "question-editor.tsx:170",
-          message: "normalized-selected",
-          data: { normalizedType, normalizedKey },
-          timestamp: Date.now(),
-          sessionId: "debug-session",
-          runId: "pre-fix",
-          hypothesisId: "H2",
-        }),
-      }).catch(() => {
-        /* no-op */
-      });
-      // #endregion
       form.reset({
         active: selected.active,
         order: selected.order,
@@ -323,48 +287,12 @@ export function QuestionEditor({
         },
         visibilityRules: selected.visibilityRules ?? [],
       });
-      // #region agent log
-      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          location: "question-editor.tsx:186",
-          message: "values-after-reset",
-          data: { values: form.getValues() },
-          timestamp: Date.now(),
-          sessionId: "debug-session",
-          runId: "pre-fix",
-          hypothesisId: "H1",
-        }),
-      }).catch(() => {
-        /* no-op */
-      });
-      // #endregion
     } else {
-      // #region agent log
-      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          location: "question-editor.tsx:179",
-          message: "reset-defaults",
-          data: {},
-          timestamp: Date.now(),
-          sessionId: "debug-session",
-          runId: "pre-fix",
-          hypothesisId: "H2",
-        }),
-      }).catch(() => {
-        /* no-op */
-      });
-      // #endregion
       form.reset({
         ...defaultValues,
         order: Number.isFinite(defaultOrder) ? (defaultOrder as number) : defaultValues.order,
       });
     }
-    skipImportPromptRef.current = true;
-    keySelectOpenedByUserRef.current = false;
   }, [defaultOrder, form, selected]);
 
   useEffect(() => {
@@ -393,66 +321,12 @@ export function QuestionEditor({
     }
   }, [form, keyValue]);
 
-  useEffect(() => {
-    // #region agent log
-    fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        location: "question-editor.tsx:193",
-        message: "type-key-watch",
-        data: { typeValue, keyValue, requiresOptions, isRangeType },
-        timestamp: Date.now(),
-        sessionId: "debug-session",
-        runId: "pre-fix",
-        hypothesisId: "H2",
-      }),
-    }).catch(() => {
-      /* no-op */
-    });
-    // #endregion
-  }, [isRangeType, keyValue, requiresOptions, typeValue]);
-
   const options = form.watch("options") ?? [];
-  // #region agent log
-  fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      location: "question-editor.tsx:202",
-      message: "options-watch",
-      data: { optionsCount: options.length, requiresOptions },
-      timestamp: Date.now(),
-      sessionId: "debug-session",
-      runId: "pre-fix",
-      hypothesisId: "H3",
-    }),
-  }).catch(() => {
-    /* no-op */
-  });
-  // #endregion
   const importVocabularyOptions = useCallback(async () => {
     if (!isVocabularyKey) return;
     setImportError(null);
     setIsImporting(true);
     try {
-      // #region agent log
-      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          location: "question-editor.tsx:214",
-          message: "import-start",
-          data: { keyValue, optionsCount: options.length },
-          timestamp: Date.now(),
-          sessionId: "debug-session",
-          runId: "pre-fix",
-          hypothesisId: "H4",
-        }),
-      }).catch(() => {
-        /* no-op */
-      });
-      // #endregion
       const vocabOptions = await listVocabularyOptions(String(keyValue), { includeInactive: true });
       const next = vocabOptions.map((option) => ({
         value: option.value,
@@ -461,46 +335,12 @@ export function QuestionEditor({
         active: option.active,
       }));
       replace(next);
-      // #region agent log
-      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          location: "question-editor.tsx:231",
-          message: "import-done",
-          data: { vocabCount: vocabOptions.length, mergedCount: next.length },
-          timestamp: Date.now(),
-          sessionId: "debug-session",
-          runId: "pre-fix",
-          hypothesisId: "H4",
-        }),
-      }).catch(() => {
-        /* no-op */
-      });
-      // #endregion
-    } catch (err) {
+    } catch (_err) {
       setImportError("Nu pot importa opțiunile din Vocabulary.");
-      // #region agent log
-      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          location: "question-editor.tsx:235",
-          message: "import-error",
-          data: { error: String(err) },
-          timestamp: Date.now(),
-          sessionId: "debug-session",
-          runId: "pre-fix",
-          hypothesisId: "H4",
-        }),
-      }).catch(() => {
-        /* no-op */
-      });
-      // #endregion
     } finally {
       setIsImporting(false);
     }
-  }, [isVocabularyKey, keyValue, options.length, replace]);
+  }, [isVocabularyKey, keyValue, replace]);
 
   useEffect(() => {
     if (!keyValue) return;
@@ -526,33 +366,10 @@ export function QuestionEditor({
 
   useEffect(() => {
     prevKeyRef.current = keyValue;
-    skipImportPromptRef.current = false;
-    userChangedKeyRef.current = false;
-    keySelectOpenedByUserRef.current = false;
     if (!requiresOptions || !isVocabularyKey) return;
     void importVocabularyOptions();
   }, [isVocabularyKey, keyValue, requiresOptions, importVocabularyOptions]);
 
-  useEffect(() => {
-    if (!requiresOptions) return;
-    // #region agent log
-    fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        location: "question-editor.tsx:246",
-        message: "options-state",
-        data: { requiresOptions, isVocabularyKey, fieldsCount: fields.length, optionsCount: options.length },
-        timestamp: Date.now(),
-        sessionId: "debug-session",
-        runId: "pre-fix",
-        hypothesisId: "H3",
-      }),
-    }).catch(() => {
-      /* no-op */
-    });
-    // #endregion
-  }, [fields.length, isVocabularyKey, options.length, requiresOptions]);
   const openNewOptionDialog = () => {
     setEditingOptionIndex(null);
     setOptionError(null);
@@ -703,51 +520,8 @@ export function QuestionEditor({
                   </FormLabel>
                   <Select
                     value={field.value}
-                    onOpenChange={(open) => {
-                      if (open) keySelectOpenedByUserRef.current = true;
-                    }}
                     onValueChange={(value) => {
-                      // Radix can call onValueChange during form resets; only treat as user action
-                      // if the dropdown was opened by the user.
-                      userChangedKeyRef.current = keySelectOpenedByUserRef.current;
-                      keySelectOpenedByUserRef.current = false;
-                      if (!userChangedKeyRef.current && value === "") {
-                        // #region agent log
-                        fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({
-                            location: "question-editor.tsx:388",
-                            message: "key-change-ignored",
-                            data: { value, userChanged: userChangedKeyRef.current },
-                            timestamp: Date.now(),
-                            sessionId: "debug-session",
-                            runId: "post-fix",
-                            hypothesisId: "H2",
-                          }),
-                        }).catch(() => {
-                          /* no-op */
-                        });
-                        // #endregion
-                        return;
-                      }
-                      // #region agent log
-                      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          location: "question-editor.tsx:395",
-                          message: "key-changed",
-                          data: { value, userChanged: userChangedKeyRef.current },
-                          timestamp: Date.now(),
-                          sessionId: "debug-session",
-                          runId: "post-fix",
-                          hypothesisId: "H2",
-                        }),
-                      }).catch(() => {
-                        /* no-op */
-                      });
-                      // #endregion
+                      if (!value) return;
                       field.onChange(value);
                     }}
                   >
@@ -779,49 +553,8 @@ export function QuestionEditor({
                   </FormLabel>
                   <Select
                     value={field.value}
-                    onOpenChange={(open) => {
-                      if (open) keySelectOpenedByUserRef.current = true;
-                    }}
                     onValueChange={(value) => {
-                      const userChanged = keySelectOpenedByUserRef.current;
-                      keySelectOpenedByUserRef.current = false;
-                      if (!userChanged && value === "") {
-                        // #region agent log
-                        fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({
-                            location: "question-editor.tsx:425",
-                            message: "type-change-ignored",
-                            data: { value, userChanged },
-                            timestamp: Date.now(),
-                            sessionId: "debug-session",
-                            runId: "post-fix",
-                            hypothesisId: "H2",
-                          }),
-                        }).catch(() => {
-                          /* no-op */
-                        });
-                        // #endregion
-                        return;
-                      }
-                      // #region agent log
-                      fetch("http://127.0.0.1:7243/ingest/a116ccf1-b12b-4cc0-98e6-74af85002cbb", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          location: "question-editor.tsx:433",
-                          message: "type-changed",
-                          data: { value, userChanged },
-                          timestamp: Date.now(),
-                          sessionId: "debug-session",
-                          runId: "post-fix",
-                          hypothesisId: "H2",
-                        }),
-                      }).catch(() => {
-                        /* no-op */
-                      });
-                      // #endregion
+                      if (!value) return;
                       field.onChange(value);
                     }}
                   >
@@ -1117,24 +850,12 @@ export function QuestionEditor({
                                   form.setValue(`visibilityRules.${index}.optionValues`, next, { shouldDirty: true });
                                 };
                                 return (
-                                  <button
-                                    key={option.value}
-                                    type="button"
-                                    className="flex items-center gap-2 text-sm"
-                                    onClick={toggle}
-                                  >
-                                    <Checkbox
-                                      checked={checked}
-                                      onCheckedChange={() => {
-                                        /* handled by row click */
-                                      }}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        toggle();
-                                      }}
-                                    />
-                                    <span>{option.label}</span>
-                                  </button>
+                                  <div key={option.value} className="flex items-center gap-2 text-sm">
+                                    <Checkbox checked={checked} onCheckedChange={toggle} aria-label={option.label} />
+                                    <button type="button" className="text-left hover:underline" onClick={toggle}>
+                                      {option.label}
+                                    </button>
+                                  </div>
                                 );
                               })}
                             </div>
@@ -1152,8 +873,17 @@ export function QuestionEditor({
             )}
           </div>
 
-          <Button type="submit" data-tour="questionnaire-add-question">
-            {selected ? "Actualizează întrebarea" : "Adaugă întrebarea"}
+          <Button type="submit" data-tour="questionnaire-add-question" disabled={isSubmitting}>
+            {isSubmitting ? (
+              <>
+                <Loader2 className="mr-2 size-4 animate-spin" />
+                {selected ? "Se actualizează..." : "Se adaugă..."}
+              </>
+            ) : selected ? (
+              "Actualizează întrebarea"
+            ) : (
+              "Adaugă întrebarea"
+            )}
           </Button>
         </form>
       </Form>

@@ -41,6 +41,11 @@ import { cn } from "@/lib/utils";
 const MAX_CUSTOM_ITEMS = 10;
 const ROLE_NONE = "__none__";
 
+const optionalNumber = z.preprocess(
+  (value) => (value === "" || value === null || value === undefined ? undefined : Number(value)),
+  z.number().optional(),
+);
+
 type PackageFormValues = {
   active: boolean;
   title: string;
@@ -50,6 +55,11 @@ type PackageFormValues = {
   bladeProductId: string;
   rubberFhProductId: string;
   rubberBhProductId: string;
+  attributes: {
+    control?: number;
+    spin?: number;
+    speed?: number;
+  };
 };
 
 const formSchema = z.object({
@@ -61,6 +71,11 @@ const formSchema = z.object({
   bladeProductId: z.string().optional(),
   rubberFhProductId: z.string().optional(),
   rubberBhProductId: z.string().optional(),
+  attributes: z.object({
+    control: optionalNumber,
+    spin: optionalNumber,
+    speed: optionalNumber,
+  }),
 });
 
 type CustomItemDraft = {
@@ -97,6 +112,9 @@ const createEmptyCustomItem = (): CustomItemDraft => ({
   id: generateClientId(),
   productId: "",
 });
+
+const compactNumberFields = (values: Record<string, number | undefined>) =>
+  Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined));
 
 const normalizeConditionValues = (value: unknown) => {
   if (Array.isArray(value)) return value.filter((item) => typeof item === "string" && item.trim());
@@ -392,6 +410,11 @@ export function PackageForm({
       bladeProductId: roleMap.blade ?? "",
       rubberFhProductId: roleMap.rubber_fh ?? "",
       rubberBhProductId: roleMap.rubber_bh ?? "",
+      attributes: {
+        control: initialValues?.attributes?.control,
+        spin: initialValues?.attributes?.spin,
+        speed: initialValues?.attributes?.speed,
+      },
     },
   });
 
@@ -520,13 +543,6 @@ export function PackageForm({
     () => selectedProductIds.map((id) => productsById.get(id)).filter((item): item is WithId<Product> => Boolean(item)),
     [productsById, selectedProductIds],
   );
-  const duplicateProductIds = useMemo(
-    () =>
-      selectedProductIds.filter(
-        (productId, index, all) => all.indexOf(productId) !== index && productId.trim().length > 0,
-      ),
-    [selectedProductIds],
-  );
   const totalPrice = useMemo(
     () => Number(selectedProducts.reduce((sum, product) => sum + Number(product.price ?? 0), 0).toFixed(2)),
     [selectedProducts],
@@ -546,12 +562,7 @@ export function PackageForm({
     (mode === "custom" && customHasEmptyProducts);
 
   const isSubmitting = form.formState.isSubmitting;
-  const isSubmitBlocked =
-    isSubmitting ||
-    currencies.length > 1 ||
-    duplicateProductIds.length > 0 ||
-    customOutOfBounds ||
-    hasMissingRequiredProducts;
+  const isSubmitBlocked = isSubmitting || currencies.length > 1 || customOutOfBounds || hasMissingRequiredProducts;
 
   useEffect(() => {
     if (mode !== "custom") return;
@@ -657,22 +668,11 @@ export function PackageForm({
         setFormError("Completează produsul pentru fiecare item din pachet.");
         return;
       }
-      const duplicates = trimmedItems
-        .map((item) => item.productId)
-        .filter((productId, index, all) => all.indexOf(productId) !== index);
-      if (duplicates.length > 0) {
-        setFormError("Același produs nu poate apărea de mai multe ori în același pachet.");
-        return;
-      }
       modeItems = trimmedItems;
     }
 
     if (modeItems.some((item) => !item.productId)) {
       setFormError("Completează toate produsele necesare pentru modul selectat.");
-      return;
-    }
-    if (duplicateProductIds.length > 0) {
-      setFormError("Același produs nu poate apărea de mai multe ori în același pachet.");
       return;
     }
     if (currencies.length > 1) {
@@ -683,9 +683,14 @@ export function PackageForm({
     const payload: PackageFormPayload = {
       active: values.active,
       title: values.title.trim(),
-      ...(values.description?.trim() ? { description: values.description.trim() } : {}),
+      description: values.description.trim(),
       mode: values.mode,
       items: modeItems,
+      attributes: compactNumberFields({
+        control: values.attributes.control,
+        spin: values.attributes.spin,
+        speed: values.attributes.speed,
+      }),
       recommendationScenarios: scenarios.map((scenario) => ({
         active: scenario.active,
         order: scenario.order,
@@ -780,6 +785,73 @@ export function PackageForm({
             )}
           />
         </div>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Atribute pachet</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="text-muted-foreground text-sm">
+              Valorile sunt opționale și se folosesc la sortarea recomandărilor (viteză/spin/control).
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              <FormField
+                control={form.control}
+                name="attributes.speed"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Viteză</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        value={field.value ?? ""}
+                        onChange={(event) =>
+                          field.onChange(event.target.value === "" ? undefined : Number(event.target.value))
+                        }
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="attributes.spin"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Spin</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        value={field.value ?? ""}
+                        onChange={(event) =>
+                          field.onChange(event.target.value === "" ? undefined : Number(event.target.value))
+                        }
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="attributes.control"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Control</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        value={field.value ?? ""}
+                        onChange={(event) =>
+                          field.onChange(event.target.value === "" ? undefined : Number(event.target.value))
+                        }
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </div>
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader>
@@ -948,11 +1020,6 @@ export function PackageForm({
               {currencies.length > 1 ? (
                 <div className="text-destructive text-xs md:col-span-2">
                   Produsele selectate au monede diferite. Salvarea este blocată.
-                </div>
-              ) : null}
-              {duplicateProductIds.length > 0 ? (
-                <div className="text-destructive text-xs md:col-span-2">
-                  Același produs nu poate apărea de mai multe ori în același pachet.
                 </div>
               ) : null}
               {customOutOfBounds ? (

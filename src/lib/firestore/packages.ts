@@ -2,6 +2,7 @@ import {
   addDoc,
   collection,
   deleteDoc,
+  deleteField,
   doc,
   documentId,
   getDoc,
@@ -105,6 +106,23 @@ const normalizeItems = (items: RecommendationPackageItem[]): RecommendationPacka
     return role ? { role, productId } : { productId };
   });
 
+const normalizeOptionalNumber = (value: unknown) => {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const normalizeAttributes = (attributes: RecommendationPackage["attributes"]) => {
+  if (!attributes) return undefined;
+  const normalized = {
+    control: normalizeOptionalNumber(attributes.control),
+    spin: normalizeOptionalNumber(attributes.spin),
+    speed: normalizeOptionalNumber(attributes.speed),
+  };
+  const hasAnyValue = Object.values(normalized).some((value) => value !== undefined);
+  return hasAnyValue ? normalized : undefined;
+};
+
 async function resolvePackageTotals(items: RecommendationPackageItem[]) {
   const uniqueIds = [...new Set(items.map((item) => item.productId).filter(Boolean))];
   if (uniqueIds.length === 0) {
@@ -157,16 +175,11 @@ async function validateAndEnrichPayload(input: PackagePayloadInput) {
   if (normalizedItems.some((item) => !item.productId)) {
     throw new Error("Toate item-urile din pachet trebuie să aibă produs selectat.");
   }
-  const duplicateProductIds = normalizedItems
-    .map((item) => item.productId)
-    .filter((productId, index, all) => all.indexOf(productId) !== index);
-  if (duplicateProductIds.length > 0) {
-    throw new Error("Același produs nu poate fi adăugat de mai multe ori în pachet.");
-  }
 
   assertValidItemsForMode(mode, normalizedItems);
   const persistedItems = mode === "custom" ? normalizedItems : sortItems(normalizedItems);
   const { totalPrice, currency } = await resolvePackageTotals(persistedItems);
+  const attributes = normalizeAttributes(input.attributes);
 
   return {
     active: Boolean(input.active),
@@ -174,6 +187,7 @@ async function validateAndEnrichPayload(input: PackagePayloadInput) {
     ...(input.description?.trim() ? { description: input.description.trim() } : {}),
     mode,
     items: persistedItems,
+    ...(attributes ? { attributes } : {}),
     recommendationScenarios: (input.recommendationScenarios ?? []).map((scenario) => ({
       active: Boolean(scenario.active),
       order: Number(scenario.order ?? 0),
@@ -272,9 +286,16 @@ export async function updatePackage(packageId: string, input: PackagePayloadInpu
   }
 
   const payload = await validateAndEnrichPayload({ ...existing, ...input });
+  const hasDescriptionInInput = Object.hasOwn(input, "description");
+  const nextDescription = typeof input.description === "string" ? input.description.trim() : undefined;
 
   await updateDoc(doc(db, PACKAGES_COLLECTION, packageId), {
     ...payload,
+    ...(hasDescriptionInInput
+      ? nextDescription
+        ? { description: nextDescription }
+        : { description: deleteField() }
+      : {}),
     updatedAt: serverTimestamp(),
   });
   await touchMetaConfig();

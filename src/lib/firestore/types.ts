@@ -87,6 +87,7 @@ export type RecommendationPackage = {
   description?: string;
   mode: PackageMode;
   items: RecommendationPackageItem[];
+  attributes?: { control?: number; spin?: number; speed?: number };
   totalPrice: number;
   currency: "EUR" | "RON";
   recommendationScenarios?: ProductRecommendationScenario[];

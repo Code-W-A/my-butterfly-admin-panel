@@ -555,7 +555,7 @@ export const HELP_CONTENT: Record<HelpKey, { title: string; sections: HelpSectio
         title: "Tab-uri",
         bullets: [
           "Chestionar: alegi chestionarul, răspunzi la întrebări și finalizezi sesiunea.",
-          "Rezultate: lista produselor recomandate peste pragul minim, sortate după matchPercent.",
+          "Rezultate: lista recomandărilor peste pragul minim, cu sortare după potrivire/preț/viteză/spin/control (crescător sau descrescător).",
           "Favorite: salvezi produse ca favorite pentru comparații.",
           "Istoric: sesiuni rulate anterior (util pentru regression testing).",
         ],
