@@ -19,13 +19,19 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { SortableTableHead, type SortState } from "@/components/ui/sortable-table-head";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { deleteQuestionnaire, getQuestionnaire, updateQuestionnaire } from "@/lib/firestore/questionnaires";
+import {
+  deleteQuestionnaire,
+  getQuestionnaire,
+  setQuestionnaireRecommended,
+  updateQuestionnaire,
+} from "@/lib/firestore/questionnaires";
 import { listQuestions } from "@/lib/firestore/questions";
 import type { Questionnaire, QuestionnaireQuestion, WithId } from "@/lib/firestore/types";
 
 const FormSchema = z.object({
   title: z.string().min(2, "Title is required."),
   active: z.boolean(),
+  isRecommend: z.boolean(),
 });
 
 const formatQuestionType = (type: QuestionnaireQuestion["type"]) => {
@@ -75,6 +81,7 @@ export default function QuestionnaireDetailPage() {
     defaultValues: {
       title: "",
       active: true,
+      isRecommend: false,
     },
   });
   const isSubmitting = form.formState.isSubmitting;
@@ -100,6 +107,7 @@ export default function QuestionnaireDetailPage() {
       form.reset({
         title: questionnaireData.title,
         active: questionnaireData.active,
+        isRecommend: Boolean(questionnaireData.isRecommend ?? questionnaireData.isRecommed),
       });
     }
   }, [form, questionnaireId]);
@@ -110,6 +118,9 @@ export default function QuestionnaireDetailPage() {
 
   const onSubmit = async (values: z.infer<typeof FormSchema>) => {
     await updateQuestionnaire(questionnaireId, values);
+    if (values.isRecommend) {
+      await setQuestionnaireRecommended(questionnaireId, true);
+    }
     await load();
   };
 
@@ -183,6 +194,24 @@ export default function QuestionnaireDetailPage() {
             render={({ field }) => (
               <FormItem className="flex items-center justify-between rounded-md border p-3">
                 <FormLabel>Activ</FormLabel>
+                <FormControl>
+                  <Switch checked={field.value} onCheckedChange={field.onChange} />
+                </FormControl>
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name="isRecommend"
+            render={({ field }) => (
+              <FormItem className="flex items-center justify-between rounded-md border p-3">
+                <div>
+                  <FormLabel>Recomandat implicit</FormLabel>
+                  <p className="text-muted-foreground text-xs">
+                    Doar un chestionar poate fi recomandat. Dacă nu există unul recomandat, mobile folosește fallback la
+                    cel mai recent.
+                  </p>
+                </div>
                 <FormControl>
                   <Switch checked={field.value} onCheckedChange={field.onChange} />
                 </FormControl>

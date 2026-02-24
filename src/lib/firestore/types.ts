@@ -2,6 +2,9 @@ import type { Timestamp } from "firebase/firestore";
 
 export type Questionnaire = {
   active: boolean;
+  isRecommend?: boolean;
+  // legacy typo kept read-only for backward compatibility with older mobile builds
+  isRecommed?: boolean;
   title: string;
   linkedRuleSetId?: string;
   createdAt: Timestamp;

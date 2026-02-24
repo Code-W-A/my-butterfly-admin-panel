@@ -25,23 +25,26 @@ import {
   createQuestionnaireCompletion,
   setQuestionnaireCompletionSpecialistRequestId,
 } from "@/lib/firestore/completions";
-import { listPackages } from "@/lib/firestore/packages";
 import { listProducts, updateProduct } from "@/lib/firestore/products";
 import { listQuestionnaires } from "@/lib/firestore/questionnaires";
 import { listQuestions } from "@/lib/firestore/questions";
 import { createSpecialistRequest } from "@/lib/firestore/requests";
-import { getRecommendationSettings } from "@/lib/firestore/settings";
 import type {
   Product,
   Questionnaire,
   QuestionnaireQuestion,
   QuestionnaireQuestionVisibilityRule,
-  RecommendationPackage,
   WithId,
 } from "@/lib/firestore/types";
 import { listVocabularyOptions } from "@/lib/firestore/vocabulary";
-import { matchProductScenarios, type RecommendationInput } from "@/lib/recommendations/match";
-import { matchPackageScenarios } from "@/lib/recommendations/match-packages";
+import {
+  type ComputeRecommendationsResponse,
+  computeRecommendations,
+  type PackageMatch,
+  type ProductMatch,
+  type RecommendationInput,
+  type RecommendationSkippedQuestion,
+} from "@/lib/recommendations/compute-recommendations.client";
 
 const isDebugEnabled =
   process.env.NEXT_PUBLIC_DEBUG === "1" ||
@@ -56,8 +59,16 @@ type RangeAnswer = { min?: string; max?: string };
 type ResultMode = "packages" | "products";
 type SortMetric = "fit" | "price" | "speed" | "spin" | "control";
 type SortDirection = "asc" | "desc";
-type ProductMatchItem = ReturnType<typeof matchProductScenarios>[number];
-type PackageMatchItem = ReturnType<typeof matchPackageScenarios>[number];
+type ProductPreview = {
+  id: string;
+  name: string;
+  imageUrls?: string[];
+  imageUrl?: string;
+  productUrl?: string;
+  source?: { provider: "prestashop"; prestashopProductId?: string };
+};
+type ProductMatchItem = ProductMatch;
+type PackageMatchItem = PackageMatch;
 type HistorySession = {
   id: string;
   questionnaireId: string;
@@ -116,7 +127,7 @@ const formatAnswerForQuestion = (value: unknown, question?: QuestionnaireQuestio
   return toLabel(value);
 };
 
-const buildImageGallery = (product: Product) => {
+const buildImageGallery = (product: Pick<ProductPreview, "imageUrls" | "imageUrl">) => {
   const images = [...(product.imageUrls ?? []), ...(product.imageUrl ? [product.imageUrl] : [])]
     .map((item) => item.trim())
     .filter(Boolean);
@@ -139,17 +150,6 @@ const asTrimmedString = (value: unknown) => {
   return trimmed ? trimmed : undefined;
 };
 
-const asNumber = (value: unknown) => {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (!trimmed) return undefined;
-    const parsed = Number(trimmed);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-  return undefined;
-};
-
 const asStringArray = (value: unknown) => {
   if (Array.isArray(value)) {
     return value.map((item) => (typeof item === "string" ? item.trim() : "")).filter(Boolean);
@@ -161,73 +161,6 @@ const asStringArray = (value: unknown) => {
 const asSingleChoice = (value: unknown) => {
   const values = asStringArray(value);
   return values[0];
-};
-
-const parseRangeAnswer = (value: unknown) => {
-  if (!value || typeof value !== "object") return { min: undefined, max: undefined };
-  const range = value as RangeAnswer;
-  return {
-    min: asNumber(range.min),
-    max: asNumber(range.max),
-  };
-};
-
-const parsePreferences = (value: string) =>
-  value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-
-const buildRecommendationInput = (questions: WithId<QuestionnaireQuestion>[], answers: AnswerMap) => {
-  const getAnswerByKey = (key: QuestionnaireQuestion["key"]) => {
-    const question = questions.find((item) => item.active && item.key === key);
-    return question ? answers[question.id] : undefined;
-  };
-
-  const selectionsByKey = questions.reduce<Record<string, string[]>>((acc, question) => {
-    if (!question.active) return acc;
-    const answer = answers[question.id];
-    if (question.type === "single_select") {
-      const selected = asSingleChoice(answer);
-      if (selected) acc[question.key] = [selected];
-      return acc;
-    }
-    if (question.type === "multi_select") {
-      const selected = asStringArray(answer);
-      if (selected.length) acc[question.key] = selected;
-    }
-    return acc;
-  }, {});
-
-  const level = asSingleChoice(getAnswerByKey("level"));
-  const style = asSingleChoice(getAnswerByKey("style"));
-  const distance = asSingleChoice(getAnswerByKey("distance"));
-  const priority = asSingleChoice(getAnswerByKey("priority"));
-
-  const budgetAnswer = getAnswerByKey("budget");
-  const budgetNumber = asNumber(budgetAnswer);
-  const budgetRange = parseRangeAnswer(budgetAnswer);
-
-  const preferencesAnswer = getAnswerByKey("preferences");
-  const preferences = Array.isArray(preferencesAnswer)
-    ? asStringArray(preferencesAnswer)
-    : typeof preferencesAnswer === "string"
-      ? parsePreferences(preferencesAnswer)
-      : [];
-
-  const input: RecommendationInput = {
-    level,
-    style,
-    distance,
-    priority,
-    budget: budgetNumber,
-    budgetMin: budgetRange.min,
-    budgetMax: budgetRange.max,
-    preferences: preferences.length ? preferences : undefined,
-    selectionsByKey: Object.keys(selectionsByKey).length ? selectionsByKey : undefined,
-  };
-
-  return { input, preferences };
 };
 
 const isRequiredAnswered = (question: QuestionnaireQuestion, answer: unknown) => {
@@ -302,7 +235,6 @@ export default function RecommendationTestPage() {
   const { user: authUser } = useAuthUser();
 
   const [products, setProducts] = useState<WithId<Product>[]>([]);
-  const [packages, setPackages] = useState<WithId<RecommendationPackage>[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingQuestions, setIsLoadingQuestions] = useState(false);
 
@@ -312,18 +244,17 @@ export default function RecommendationTestPage() {
   const [answers, setAnswers] = useState<AnswerMap>({});
   const [currentStep, setCurrentStep] = useState(0);
   const [finalizedInput, setFinalizedInput] = useState<RecommendationInput | null>(null);
-  const [finalizedProductMatches, setFinalizedProductMatches] = useState<ReturnType<typeof matchProductScenarios>>([]);
-  const [finalizedPackageMatches, setFinalizedPackageMatches] = useState<ReturnType<typeof matchPackageScenarios>>([]);
+  const [finalizedProductMatches, setFinalizedProductMatches] = useState<ProductMatch[]>([]);
+  const [finalizedPackageMatches, setFinalizedPackageMatches] = useState<PackageMatch[]>([]);
+  const [finalizedAskedQuestionIds, setFinalizedAskedQuestionIds] = useState<string[]>([]);
+  const [finalizedSkippedQuestions, setFinalizedSkippedQuestions] = useState<RecommendationSkippedQuestion[]>([]);
+  const [finalizedComputationMeta, setFinalizedComputationMeta] = useState<ComputeRecommendationsResponse | null>(null);
   const [finalizedResultMode, setFinalizedResultMode] = useState<ResultMode | null>(null);
-  const [selectedProductMatch, setSelectedProductMatch] = useState<ReturnType<typeof matchProductScenarios>[0] | null>(
-    null,
-  );
-  const [selectedPackageMatch, setSelectedPackageMatch] = useState<ReturnType<typeof matchPackageScenarios>[0] | null>(
-    null,
-  );
+  const [selectedProductMatch, setSelectedProductMatch] = useState<ProductMatch | null>(null);
+  const [selectedPackageMatch, setSelectedPackageMatch] = useState<PackageMatch | null>(null);
   const [sortMetric, setSortMetric] = useState<SortMetric>("fit");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
-  const [minMatchPercent, setMinMatchPercent] = useState<number>(65);
+  const [isComputingRecommendations, setIsComputingRecommendations] = useState(false);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [history, setHistory] = useState<HistorySession[]>([]);
   const [isDebugOpen, setIsDebugOpen] = useState(false);
@@ -363,7 +294,7 @@ export default function RecommendationTestPage() {
   );
   const productsById = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
 
-  const openProductUrl = useCallback(async (product: WithId<Product>) => {
+  const openProductUrl = useCallback(async (product: ProductPreview) => {
     const fallbackUrl = product.productUrl;
     if (!fallbackUrl) return;
     let resolvedUrl = fallbackUrl;
@@ -404,29 +335,17 @@ export default function RecommendationTestPage() {
       });
   }, [answers, questions, questionsById]);
 
-  const getAskedKeysFromIds = useCallback(
-    (ids?: string[]) => {
-      if (!ids?.length) return undefined;
-      const keys = ids.map((id) => questionsById[id]?.key).filter((key): key is string => Boolean(key));
-      return keys.length ? keys : undefined;
-    },
-    [questionsById],
-  );
-
   const load = useCallback(async () => {
     try {
       setIsLoading(true);
-      const [productsData, packagesData, questionnairesData, levelOptions, styleOptions, distanceOptions] =
-        await Promise.all([
-          listProducts({ activeOnly: true }),
-          listPackages({ activeOnly: true }),
-          listQuestionnaires(),
-          listVocabularyOptions("level", { includeInactive: false }),
-          listVocabularyOptions("style", { includeInactive: false }),
-          listVocabularyOptions("distance", { includeInactive: false }),
-        ]);
+      const [productsData, questionnairesData, levelOptions, styleOptions, distanceOptions] = await Promise.all([
+        listProducts({ activeOnly: true }),
+        listQuestionnaires(),
+        listVocabularyOptions("level", { includeInactive: false }),
+        listVocabularyOptions("style", { includeInactive: false }),
+        listVocabularyOptions("distance", { includeInactive: false }),
+      ]);
       setProducts(productsData);
-      setPackages(packagesData);
       setQuestionnaires(questionnairesData);
       const toMap = (options: VocabularyOption[]) =>
         Object.fromEntries(options.map((o) => [o.value, o.label])) as VocabMap;
@@ -454,100 +373,103 @@ export default function RecommendationTestPage() {
     });
   }, [load]);
 
-  useEffect(() => {
-    getRecommendationSettings()
-      .then((settings) => {
-        if (settings?.minMatchPercent !== undefined) {
-          setMinMatchPercent(settings.minMatchPercent);
-        }
-      })
-      .catch((err) => {
-        logFirebaseError("RecommendationTest: loadSettings", err);
-      });
+  const applyComputationResult = useCallback((computation: ComputeRecommendationsResponse) => {
+    setFinalizedInput(computation.input);
+    setFinalizedProductMatches(computation.productMatches);
+    setFinalizedPackageMatches(computation.packageMatches);
+    setFinalizedResultMode(computation.resultMode);
+    setFinalizedAskedQuestionIds(computation.askedQuestionIds);
+    setFinalizedSkippedQuestions(computation.skippedQuestions);
+    setFinalizedComputationMeta(computation);
+    setSelectedProductMatch(null);
+    setSelectedPackageMatch(null);
   }, []);
 
+  const resetFinalizedState = useCallback(() => {
+    setFinalizedInput(null);
+    setFinalizedProductMatches([]);
+    setFinalizedPackageMatches([]);
+    setFinalizedResultMode(null);
+    setFinalizedAskedQuestionIds([]);
+    setFinalizedSkippedQuestions([]);
+    setFinalizedComputationMeta(null);
+    setSelectedProductMatch(null);
+    setSelectedPackageMatch(null);
+  }, []);
+
+  const requestComputation = useCallback(
+    async (questionnaireId: string, responseAnswers: AnswerMap) =>
+      computeRecommendations({
+        questionnaireId,
+        answers: responseAnswers,
+        debug: isDebugEnabled,
+      }),
+    [],
+  );
+
   useEffect(() => {
-    if (!selectedQuestionnaireId) {
-      setQuestions([]);
-      setAnswers({});
-      setCurrentStep(0);
-      setFinalizedInput(null);
-      setFinalizedProductMatches([]);
-      setFinalizedPackageMatches([]);
-      setFinalizedResultMode(null);
-      setSelectedProductMatch(null);
-      setSelectedPackageMatch(null);
-      setPendingSession(null);
-      return;
-    }
-    setIsLoadingQuestions(true);
-    listQuestions(selectedQuestionnaireId)
-      .then((items) => {
+    let cancelled = false;
+
+    const run = async () => {
+      if (!selectedQuestionnaireId) {
+        setQuestions([]);
+        setAnswers({});
+        setCurrentStep(0);
+        resetFinalizedState();
+        setPendingSession(null);
+        return;
+      }
+
+      try {
+        setIsLoadingQuestions(true);
+        const items = await listQuestions(selectedQuestionnaireId);
+        if (cancelled) return;
         setQuestions(items);
+
         if (pendingSession && pendingSession.questionnaireId === selectedQuestionnaireId) {
           setAnswers(pendingSession.answers);
-          setFinalizedInput(pendingSession.input);
-          const itemsById = Object.fromEntries(items.map((question) => [question.id, question] as const)) as Record<
-            string,
-            QuestionnaireQuestion
-          >;
-          const askedKeys = pendingSession.askedQuestionIds
-            ? pendingSession.askedQuestionIds
-                .map((id) => itemsById[id]?.key)
-                .filter((key): key is string => Boolean(key))
-            : undefined;
-          const questionnaireKeys = Array.from(
-            new Set(
-              items
-                .filter((question) => question.active)
-                .map((question) => question.key)
-                .filter(Boolean),
-            ),
-          );
-          const nextProductMatches = matchProductScenarios({
-            products,
-            input: pendingSession.input,
-            minMatchPercent,
-            askedKeys,
-            questionnaireKeys,
-            debug: isDebugEnabled,
-          });
-          const nextPackageMatches = matchPackageScenarios({
-            packages,
-            productsById,
-            input: pendingSession.input,
-            minMatchPercent,
-            askedKeys,
-            questionnaireKeys,
-            debug: isDebugEnabled,
-          });
-          const nextMode: ResultMode =
-            pendingSession.resultMode === "packages" && nextPackageMatches.length > 0 ? "packages" : "products";
-          setFinalizedProductMatches(nextProductMatches);
-          setFinalizedPackageMatches(nextPackageMatches);
-          setFinalizedResultMode(nextMode);
-          setActiveTab("results");
-          setPendingSession(null);
-        } else {
-          setAnswers({});
-          setCurrentStep(0);
-          setFinalizedInput(null);
-          setFinalizedProductMatches([]);
-          setFinalizedPackageMatches([]);
-          setFinalizedResultMode(null);
-          setSelectedProductMatch(null);
-          setSelectedPackageMatch(null);
+          setIsComputingRecommendations(true);
+          try {
+            const computation = await requestComputation(selectedQuestionnaireId, pendingSession.answers);
+            if (cancelled) return;
+            applyComputationResult(computation);
+            setActiveTab("results");
+          } catch (err) {
+            if (cancelled) return;
+            logFirebaseError("RecommendationTest: recomputePendingSession", err);
+            const info = getFirebaseErrorInfo(err);
+            const fallbackMessage = err instanceof Error ? err.message : "Calculul recomandărilor a eșuat.";
+            setError(info.message || fallbackMessage);
+          } finally {
+            if (!cancelled) {
+              setIsComputingRecommendations(false);
+              setPendingSession(null);
+            }
+          }
+          return;
         }
-      })
-      .catch((err) => {
+
+        setAnswers({});
+        setCurrentStep(0);
+        resetFinalizedState();
+      } catch (err) {
+        if (cancelled) return;
         logFirebaseError("RecommendationTest: loadQuestions", err);
         const info = getFirebaseErrorInfo(err);
-        setError(info.message || "Încărcarea întrebărilor a eșuat.");
-      })
-      .finally(() => {
-        setIsLoadingQuestions(false);
-      });
-  }, [selectedQuestionnaireId, products, packages, pendingSession, minMatchPercent, productsById]);
+        const fallbackMessage = err instanceof Error ? err.message : "Încărcarea întrebărilor a eșuat.";
+        setError(info.message || fallbackMessage);
+      } finally {
+        if (!cancelled) {
+          setIsLoadingQuestions(false);
+        }
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyComputationResult, pendingSession, requestComputation, resetFinalizedState, selectedQuestionnaireId]);
 
   useEffect(() => {
     if (orderedQuestions.length === 0) {
@@ -563,82 +485,11 @@ export default function RecommendationTestPage() {
     setAnswers((prev) => ({ ...prev, [questionId]: value }));
   };
 
-  const isMissingAnswer = useCallback((value: unknown) => {
-    if (value === undefined || value === null) return true;
-    if (Array.isArray(value)) return value.length === 0;
-    if (typeof value === "string") return value.trim().length === 0;
-    if (typeof value === "object") {
-      const range = value as { min?: string; max?: string };
-      return !(range.min?.toString().trim() && range.max?.toString().trim());
-    }
-    return false;
-  }, []);
+  const preferences = finalizedInput?.preferences ?? [];
 
-  const computeSkippedQuestions = useCallback(() => {
-    const askedIds = new Set(orderedQuestions.map((question) => question.id));
-    return questions
-      .filter((question) => !askedIds.has(question.id))
-      .map((question) => {
-        const rules = question.visibilityRules ?? [];
-        if (!question.active) {
-          return { questionId: question.id, reason: "inactive" as const };
-        }
-        if (rules.length > 0 && !rules.every((rule) => isRuleSatisfied(rule, answers, questionsById))) {
-          const hasMissingPrereq = rules.some((rule) => isMissingAnswer(answers[rule.questionId]));
-          return {
-            questionId: question.id,
-            reason: hasMissingPrereq ? ("prerequisite_not_answered" as const) : ("rule_not_met" as const),
-          };
-        }
-        return { questionId: question.id, reason: "rule_not_met" as const };
-      });
-  }, [answers, isMissingAnswer, orderedQuestions, questions, questionsById]);
-
-  const { input, preferences } = useMemo(
-    () => buildRecommendationInput(orderedQuestions, answers),
-    [orderedQuestions, answers],
-  );
-
-  const askedKeysForCurrent = useMemo(() => orderedQuestions.map((question) => question.key), [orderedQuestions]);
-  const questionnaireKeysForCurrent = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          questions
-            .filter((question) => question.active)
-            .map((question) => question.key)
-            .filter(Boolean),
-        ),
-      ),
-    [questions],
-  );
-  const productMatches = useMemo(() => {
-    return matchProductScenarios({
-      products,
-      input,
-      minMatchPercent,
-      askedKeys: askedKeysForCurrent,
-      questionnaireKeys: questionnaireKeysForCurrent,
-      debug: isDebugEnabled,
-    });
-  }, [products, input, minMatchPercent, askedKeysForCurrent, questionnaireKeysForCurrent]);
-  const packageMatches = useMemo(() => {
-    return matchPackageScenarios({
-      packages,
-      productsById,
-      input,
-      minMatchPercent,
-      askedKeys: askedKeysForCurrent,
-      questionnaireKeys: questionnaireKeysForCurrent,
-      debug: isDebugEnabled,
-    });
-  }, [packages, productsById, input, minMatchPercent, askedKeysForCurrent, questionnaireKeysForCurrent]);
-  const liveResultMode: ResultMode = packageMatches.length > 0 ? "packages" : "products";
-  const liveProductMatches = liveResultMode === "products" ? productMatches : [];
-  const livePackageMatches = liveResultMode === "packages" ? packageMatches : [];
-  const currentResultMode = finalizedResultMode ?? liveResultMode;
-  const currentProductMatches = finalizedResultMode ? finalizedProductMatches : liveProductMatches;
-  const currentPackageMatches = finalizedResultMode ? finalizedPackageMatches : livePackageMatches;
+  const currentResultMode = finalizedResultMode ?? "products";
+  const currentProductMatches = finalizedProductMatches;
+  const currentPackageMatches = finalizedPackageMatches;
 
   const sortedProductMatches = useMemo(() => {
     const dir = sortDirection === "asc" ? 1 : -1;
@@ -690,21 +541,19 @@ export default function RecommendationTestPage() {
   }, [currentPackageMatches, sortMetric, sortDirection]);
 
   const debugPayload = useMemo(() => {
-    if (!isDebugEnabled) return null;
-    const askedQuestionIds = orderedQuestions.map((question) => question.id);
-    const askedKeys = orderedQuestions.map((question) => question.key);
+    if (!isDebugEnabled || !finalizedComputationMeta) return null;
     const base = {
       meta: {
-        mode: currentResultMode,
-        minMatchPercent,
-        askedQuestionIds,
-        askedKeys,
-        orderedQuestionCount: orderedQuestions.length,
-        totalQuestionCount: questions.length,
+        mode: finalizedComputationMeta.resultMode,
+        minMatchPercent: finalizedComputationMeta.minMatchPercent,
+        askedQuestionIds: finalizedComputationMeta.askedQuestionIds,
+        askedKeys: finalizedComputationMeta.askedKeys,
+        orderedQuestionCount: finalizedComputationMeta.orderedQuestionCount,
+        totalQuestionCount: finalizedComputationMeta.totalQuestionCount,
       },
-      input: finalizedInput ?? input,
+      input: finalizedComputationMeta.input,
       answers,
-      skippedQuestions: computeSkippedQuestions(),
+      skippedQuestions: finalizedComputationMeta.skippedQuestions,
     };
     if (currentResultMode === "packages") {
       if (!sortedPackageMatches.length) return null;
@@ -743,18 +592,7 @@ export default function RecommendationTestPage() {
         debug: match.debug ?? null,
       })),
     };
-  }, [
-    answers,
-    computeSkippedQuestions,
-    currentResultMode,
-    finalizedInput,
-    input,
-    minMatchPercent,
-    orderedQuestions,
-    questions.length,
-    sortedPackageMatches,
-    sortedProductMatches,
-  ]);
+  }, [answers, currentResultMode, finalizedComputationMeta, sortedPackageMatches, sortedProductMatches]);
 
   const debugJson = useMemo(() => {
     if (!debugPayload) return "";
@@ -810,7 +648,10 @@ export default function RecommendationTestPage() {
   const canProceed = currentQuestion ? isRequiredAnswered(currentQuestion, answers[currentQuestion.id]) : false;
 
   const logQuestionnaireCompletion = useCallback(
-    async (session: HistorySession) => {
+    async (
+      session: HistorySession,
+      recommendationMeta: { askedQuestionIds: string[]; skippedQuestions: RecommendationSkippedQuestion[] },
+    ) => {
       try {
         const name = completionContact.name.trim();
         const email = completionContact.email.trim();
@@ -829,69 +670,80 @@ export default function RecommendationTestPage() {
           answers: session.answers,
           ...(session.matchProductIds.length ? { matchProductIds: session.matchProductIds } : {}),
           ...(session.matchPackageIds.length ? { matchPackageIds: session.matchPackageIds } : {}),
-          askedQuestionIds: session.askedQuestionIds,
-          skippedQuestions: computeSkippedQuestions(),
+          askedQuestionIds: recommendationMeta.askedQuestionIds,
+          skippedQuestions: recommendationMeta.skippedQuestions,
         });
         setCompletionId(ref.id);
       } catch (err) {
         logFirebaseError("RecommendationTest: createCompletion", err);
       }
     },
-    [authUser, completionContact.email, completionContact.name, computeSkippedQuestions],
+    [authUser, completionContact.email, completionContact.name],
   );
 
-  const finalizeQuestionnaire = () => {
+  const finalizeQuestionnaire = async () => {
     const name = completionContact.name.trim();
     const email = completionContact.email.trim();
     if (!name || !email) {
       setCompletionError("Completează numele și emailul înainte de a vedea rezultatele.");
       return;
     }
+    if (!selectedQuestionnaireId) {
+      setCompletionError("Selectează un chestionar.");
+      return;
+    }
+
     setCompletionError(null);
-    const sessionId = generateSessionId();
-    const questionnaireTitle =
-      questionnaires.find((item) => item.id === selectedQuestionnaireId)?.title ?? "Chestionar";
-    const resultMode: ResultMode = packageMatches.length > 0 ? "packages" : "products";
-    const session: HistorySession = {
-      id: sessionId,
-      questionnaireId: selectedQuestionnaireId,
-      questionnaireTitle,
-      createdAt: Date.now(),
-      answers,
-      input,
-      resultMode,
-      matchProductIds: resultMode === "products" ? liveProductMatches.map((match) => match.product.id) : [],
-      matchPackageIds: resultMode === "packages" ? livePackageMatches.map((match) => match.package.id) : [],
-      askedQuestionIds: orderedQuestions.map((question) => question.id),
-    };
-    setHistory((prev) => [session, ...prev].slice(0, 20));
-    setFinalizedInput(input);
-    setFinalizedProductMatches(productMatches);
-    setFinalizedPackageMatches(packageMatches);
-    setFinalizedResultMode(resultMode);
-    setSelectedProductMatch(null);
-    setSelectedPackageMatch(null);
-    setActiveTab("results");
-    setRequestSent(false);
-    void logQuestionnaireCompletion(session);
-    if (!specialistForm.name || !specialistForm.email) {
-      setSpecialistForm((prev) => ({
-        ...prev,
-        name: prev.name || completionContact.name,
-        email: prev.email || completionContact.email,
-      }));
+    setError(null);
+    setIsComputingRecommendations(true);
+    try {
+      const computation = await requestComputation(selectedQuestionnaireId, answers);
+      applyComputationResult(computation);
+
+      const sessionId = generateSessionId();
+      const questionnaireTitle =
+        questionnaires.find((item) => item.id === selectedQuestionnaireId)?.title ?? "Chestionar";
+      const resultMode: ResultMode = computation.resultMode;
+      const session: HistorySession = {
+        id: sessionId,
+        questionnaireId: selectedQuestionnaireId,
+        questionnaireTitle,
+        createdAt: Date.now(),
+        answers,
+        input: computation.input,
+        resultMode,
+        matchProductIds: resultMode === "products" ? computation.productMatches.map((match) => match.product.id) : [],
+        matchPackageIds: resultMode === "packages" ? computation.packageMatches.map((match) => match.package.id) : [],
+        askedQuestionIds: computation.askedQuestionIds,
+      };
+      setHistory((prev) => [session, ...prev].slice(0, 20));
+      setActiveTab("results");
+      setRequestSent(false);
+      void logQuestionnaireCompletion(session, {
+        askedQuestionIds: computation.askedQuestionIds,
+        skippedQuestions: computation.skippedQuestions,
+      });
+      if (!specialistForm.name || !specialistForm.email) {
+        setSpecialistForm((prev) => ({
+          ...prev,
+          name: prev.name || completionContact.name,
+          email: prev.email || completionContact.email,
+        }));
+      }
+    } catch (err) {
+      logFirebaseError("RecommendationTest: finalizeQuestionnaire", err);
+      const info = getFirebaseErrorInfo(err);
+      const fallbackMessage = err instanceof Error ? err.message : "Calculul recomandărilor a eșuat.";
+      setError(info.message || fallbackMessage);
+    } finally {
+      setIsComputingRecommendations(false);
     }
   };
 
   const restartQuestionnaire = () => {
     setAnswers({});
     setCurrentStep(0);
-    setFinalizedInput(null);
-    setFinalizedProductMatches([]);
-    setFinalizedPackageMatches([]);
-    setFinalizedResultMode(null);
-    setSelectedProductMatch(null);
-    setSelectedPackageMatch(null);
+    resetFinalizedState();
     setActiveTab("questionnaire");
     setRequestSent(false);
     setRequestError(null);
@@ -929,7 +781,7 @@ export default function RecommendationTestPage() {
     const phone = specialistForm.phone.trim();
     const email = specialistForm.email.trim();
     const note = specialistForm.note.trim();
-    const mode = finalizedResultMode ?? liveResultMode;
+    const mode = finalizedResultMode ?? "products";
     const matchProductIds = mode === "products" ? finalizedProductMatches.map((match) => match.product.id) : [];
     const matchPackageIds = mode === "packages" ? finalizedPackageMatches.map((match) => match.package.id) : [];
     if (!name || !phone) {
@@ -951,8 +803,8 @@ export default function RecommendationTestPage() {
         },
         ...(matchProductIds.length ? { matchProductIds } : {}),
         ...(matchPackageIds.length ? { matchPackageIds } : {}),
-        askedQuestionIds: orderedQuestions.map((question) => question.id),
-        skippedQuestions: computeSkippedQuestions(),
+        ...(finalizedAskedQuestionIds.length ? { askedQuestionIds: finalizedAskedQuestionIds } : {}),
+        ...(finalizedSkippedQuestions.length ? { skippedQuestions: finalizedSkippedQuestions } : {}),
         source: "recommendation_test",
       });
       if (completionId) {
@@ -985,40 +837,27 @@ export default function RecommendationTestPage() {
     setImageViewer({ ...imageViewer, index });
   };
 
-  const openHistorySession = (session: HistorySession) => {
+  const openHistorySession = async (session: HistorySession) => {
     if (session.questionnaireId !== selectedQuestionnaireId) {
       setPendingSession(session);
       setSelectedQuestionnaireId(session.questionnaireId);
       return;
     }
+    setError(null);
     setAnswers(session.answers);
-    setFinalizedInput(session.input);
-    const askedKeys = getAskedKeysFromIds(session.askedQuestionIds);
-    const nextProductMatches = matchProductScenarios({
-      products,
-      input: session.input,
-      minMatchPercent,
-      askedKeys,
-      questionnaireKeys: questionnaireKeysForCurrent,
-      debug: isDebugEnabled,
-    });
-    const nextPackageMatches = matchPackageScenarios({
-      packages,
-      productsById,
-      input: session.input,
-      minMatchPercent,
-      askedKeys,
-      questionnaireKeys: questionnaireKeysForCurrent,
-      debug: isDebugEnabled,
-    });
-    const nextMode: ResultMode =
-      session.resultMode === "packages" && nextPackageMatches.length > 0 ? "packages" : "products";
-    setFinalizedProductMatches(nextProductMatches);
-    setFinalizedPackageMatches(nextPackageMatches);
-    setFinalizedResultMode(nextMode);
-    setSelectedProductMatch(null);
-    setSelectedPackageMatch(null);
-    setActiveTab("results");
+    setIsComputingRecommendations(true);
+    try {
+      const computation = await requestComputation(session.questionnaireId, session.answers);
+      applyComputationResult(computation);
+      setActiveTab("results");
+    } catch (err) {
+      logFirebaseError("RecommendationTest: openHistorySession", err);
+      const info = getFirebaseErrorInfo(err);
+      const fallbackMessage = err instanceof Error ? err.message : "Nu am putut recalcula sesiunea.";
+      setError(info.message || fallbackMessage);
+    } finally {
+      setIsComputingRecommendations(false);
+    }
   };
 
   const renderTagBadges = (label: string, values: string[], map: VocabMap) => {
@@ -1355,8 +1194,12 @@ export default function RecommendationTestPage() {
                               Următoarea
                             </Button>
                           ) : (
-                            <Button type="button" onClick={finalizeQuestionnaire} disabled={!canProceed}>
-                              Vezi rezultate
+                            <Button
+                              type="button"
+                              onClick={finalizeQuestionnaire}
+                              disabled={!canProceed || isComputingRecommendations}
+                            >
+                              {isComputingRecommendations ? "Se calculează..." : "Vezi rezultate"}
                             </Button>
                           )}
                         </div>
@@ -1761,8 +1604,14 @@ export default function RecommendationTestPage() {
                             : `${session.matchProductIds.length} produse recomandate`}
                         </p>
                       </div>
-                      <Button type="button" variant="outline" size="sm" onClick={() => openHistorySession(session)}>
-                        Vezi sesiunea
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openHistorySession(session)}
+                        disabled={isComputingRecommendations}
+                      >
+                        {isComputingRecommendations ? "Se calculează..." : "Vezi sesiunea"}
                       </Button>
                     </div>
                   ))}

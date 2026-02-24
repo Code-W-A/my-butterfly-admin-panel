@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
-import { createQuestionnaire } from "@/lib/firestore/questionnaires";
+import { createQuestionnaire, setQuestionnaireRecommended } from "@/lib/firestore/questionnaires";
 import { createQuestion } from "@/lib/firestore/questions";
 import { listRuleSets } from "@/lib/firestore/recommendation-rule-sets";
 import type { RecommendationRuleSet, WithId } from "@/lib/firestore/types";
@@ -25,6 +25,7 @@ import { generateQuestionsFromRuleSet } from "@/lib/questionnaires/generate-from
 const FormSchema = z.object({
   title: z.string().min(2, "Title is required."),
   active: z.boolean(),
+  isRecommend: z.boolean(),
 });
 
 type CreationMode = "manual" | "rule";
@@ -45,6 +46,7 @@ export default function NewQuestionnairePage() {
     defaultValues: {
       title: "",
       active: true,
+      isRecommend: false,
     },
   });
 
@@ -96,6 +98,9 @@ export default function NewQuestionnairePage() {
     try {
       if (creationMode === "manual") {
         const ref = await createQuestionnaire(values);
+        if (values.isRecommend) {
+          await setQuestionnaireRecommended(ref.id, true);
+        }
         router.push(`/dashboard/questionnaires/${ref.id}`);
         return;
       }
@@ -119,6 +124,7 @@ export default function NewQuestionnairePage() {
       const questionnaireRef = await createQuestionnaire({
         title: values.title,
         active: false,
+        isRecommend: false,
         linkedRuleSetId: selectedRule.id,
       });
 
@@ -239,21 +245,41 @@ export default function NewQuestionnairePage() {
             )}
           />
           {creationMode === "manual" ? (
-            <FormField
-              control={form.control}
-              name="active"
-              render={({ field }) => (
-                <FormItem className="flex items-center justify-between rounded-md border p-4">
-                  <div>
-                    <FormLabel>Activ</FormLabel>
-                    <p className="text-muted-foreground text-xs">Chestionarele active apar în aplicația mobilă.</p>
-                  </div>
-                  <FormControl>
-                    <Switch checked={field.value} onCheckedChange={field.onChange} />
-                  </FormControl>
-                </FormItem>
-              )}
-            />
+            <>
+              <FormField
+                control={form.control}
+                name="active"
+                render={({ field }) => (
+                  <FormItem className="flex items-center justify-between rounded-md border p-4">
+                    <div>
+                      <FormLabel>Activ</FormLabel>
+                      <p className="text-muted-foreground text-xs">Chestionarele active apar în aplicația mobilă.</p>
+                    </div>
+                    <FormControl>
+                      <Switch checked={field.value} onCheckedChange={field.onChange} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="isRecommend"
+                render={({ field }) => (
+                  <FormItem className="flex items-center justify-between rounded-md border p-4">
+                    <div>
+                      <FormLabel>Recomandat implicit</FormLabel>
+                      <p className="text-muted-foreground text-xs">
+                        Doar un chestionar poate fi recomandat. Dacă nu există unul recomandat, mobile folosește
+                        fallback la cel mai recent.
+                      </p>
+                    </div>
+                    <FormControl>
+                      <Switch checked={field.value} onCheckedChange={field.onChange} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </>
           ) : (
             <div className="rounded-md border p-4 text-sm">
               <div className="font-medium">Draft automat</div>

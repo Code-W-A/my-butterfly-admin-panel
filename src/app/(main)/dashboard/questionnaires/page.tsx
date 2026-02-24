@@ -13,13 +13,21 @@ import { SortableTableHead, type SortState } from "@/components/ui/sortable-tabl
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
-import { deleteQuestionnaire, listQuestionnairesPage, toggleQuestionnaireActive } from "@/lib/firestore/questionnaires";
+import {
+  deleteQuestionnaire,
+  listQuestionnairesPage,
+  setQuestionnaireRecommended,
+  toggleQuestionnaireActive,
+} from "@/lib/firestore/questionnaires";
 import type { Questionnaire, WithId } from "@/lib/firestore/types";
 
 type PageCacheEntry = {
   items: WithId<Questionnaire>[];
   nextCursor?: unknown;
 };
+
+const isRecommendedQuestionnaire = (item: WithId<Questionnaire>) =>
+  typeof item.isRecommend === "boolean" ? item.isRecommend : Boolean(item.isRecommed);
 
 export default function QuestionnairesPage() {
   const [items, setItems] = useState<WithId<Questionnaire>[]>([]);
@@ -107,6 +115,40 @@ export default function QuestionnairesPage() {
     } catch (err) {
       logFirebaseError("Questionnaires: toggleActive", err);
       applyToggle(!active);
+    }
+  };
+
+  const onToggleRecommended = async (id: string, recommended: boolean) => {
+    const previousItems = items;
+    const previousPageCache = pageCache;
+
+    const patchItems = (entryItems: WithId<Questionnaire>[]) =>
+      entryItems.map((item) => {
+        if (recommended) {
+          return { ...item, isRecommend: item.id === id };
+        }
+        return item.id === id ? { ...item, isRecommend: false } : item;
+      });
+
+    setItems((prev) => patchItems(prev));
+    setPageCache((prev) => {
+      const next: Record<number, PageCacheEntry> = {};
+      Object.entries(prev).forEach(([key, entry]) => {
+        const index = Number(key);
+        next[index] = {
+          ...entry,
+          items: patchItems(entry.items),
+        };
+      });
+      return next;
+    });
+
+    try {
+      await setQuestionnaireRecommended(id, recommended);
+    } catch (err) {
+      logFirebaseError("Questionnaires: toggleRecommended", err);
+      setItems(previousItems);
+      setPageCache(previousPageCache);
     }
   };
 
@@ -213,6 +255,7 @@ export default function QuestionnairesPage() {
               <SortableTableHead sortKey="active" sort={sort} onSortChange={setSort}>
                 Activ
               </SortableTableHead>
+              <TableHead>Recomandat</TableHead>
               <SortableTableHead sortKey="updatedAt" sort={sort} onSortChange={setSort}>
                 Actualizat
               </SortableTableHead>
@@ -223,9 +266,10 @@ export default function QuestionnairesPage() {
             {isLoading ? (
               ["s1", "s2", "s3", "s4", "s5", "s6"].map((rowId) => (
                 <TableRow key={rowId}>
-                  <TableCell colSpan={4}>
-                    <div className="grid gap-3 md:grid-cols-4">
+                  <TableCell colSpan={5}>
+                    <div className="grid gap-3 md:grid-cols-5">
                       <Skeleton className="h-4 w-48" />
+                      <Skeleton className="h-4 w-16" />
                       <Skeleton className="h-4 w-16" />
                       <Skeleton className="h-4 w-32" />
                       <Skeleton className="h-8 w-28 justify-self-end" />
@@ -235,7 +279,7 @@ export default function QuestionnairesPage() {
               ))
             ) : items.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={4} className="text-muted-foreground text-sm">
+                <TableCell colSpan={5} className="text-muted-foreground text-sm">
                   Nu există chestionare create încă.
                 </TableCell>
               </TableRow>
@@ -245,6 +289,12 @@ export default function QuestionnairesPage() {
                   <TableCell className="font-medium">{item.title}</TableCell>
                   <TableCell>
                     <Switch checked={item.active} onCheckedChange={(checked) => onToggle(item.id, checked)} />
+                  </TableCell>
+                  <TableCell>
+                    <Switch
+                      checked={isRecommendedQuestionnaire(item)}
+                      onCheckedChange={(checked) => void onToggleRecommended(item.id, checked)}
+                    />
                   </TableCell>
                   <TableCell>{item.updatedAt ? item.updatedAt.toDate().toLocaleString() : "—"}</TableCell>
                   <TableCell className="text-right">

@@ -69,7 +69,9 @@ export async function getQuestionnaire(questionnaireId: string): Promise<WithId<
   return item;
 }
 
-export async function createQuestionnaire(data: Pick<Questionnaire, "title" | "active" | "linkedRuleSetId">) {
+export async function createQuestionnaire(
+  data: Pick<Questionnaire, "title" | "active" | "linkedRuleSetId" | "isRecommend">,
+) {
   const { db } = initFirebase();
   if (!db) throw new Error("Firestore not initialized.");
   const questionnairesCollection = collection(db, "questionnaires");
@@ -84,7 +86,7 @@ export async function createQuestionnaire(data: Pick<Questionnaire, "title" | "a
 
 export async function updateQuestionnaire(
   questionnaireId: string,
-  data: Partial<Pick<Questionnaire, "title" | "active">>,
+  data: Partial<Pick<Questionnaire, "title" | "active" | "isRecommend">>,
 ) {
   const { db } = initFirebase();
   if (!db) throw new Error("Firestore not initialized.");
@@ -105,6 +107,31 @@ export async function updateQuestionnaire(
 
 export async function toggleQuestionnaireActive(questionnaireId: string, active: boolean) {
   return updateQuestionnaire(questionnaireId, { active });
+}
+
+export async function setQuestionnaireRecommended(questionnaireId: string, isRecommend: boolean) {
+  const { db } = initFirebase();
+  if (!db) throw new Error("Firestore not initialized.");
+
+  if (!isRecommend) {
+    await updateQuestionnaire(questionnaireId, { isRecommend: false });
+    return;
+  }
+
+  const questionnairesCollection = collection(db, "questionnaires");
+  const snapshot = await getDocs(questionnairesCollection);
+  const batch = writeBatch(db);
+  snapshot.docs.forEach((docSnap) => {
+    if (docSnap.id === "vocabulary") return;
+    const nextValue = docSnap.id === questionnaireId;
+    batch.update(docSnap.ref, {
+      isRecommend: nextValue,
+      updatedAt: serverTimestamp(),
+    });
+  });
+  await batch.commit();
+  cache.questionnaires.clear();
+  await touchMetaConfig();
 }
 
 export async function batchSetQuestionnairesActive(ids: string[], active: boolean) {
