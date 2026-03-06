@@ -183,8 +183,8 @@ test("package fitScore uses blade product when available", () => {
     mode: "triple",
     items: [
       { role: "blade", productId: blade.id },
-      { role: "rubber_fh", productId: fh.id },
-      { role: "rubber_bh", productId: bh.id },
+      { role: "forehand", productId: fh.id },
+      { role: "backhand", productId: bh.id },
     ],
     totalPrice: 250,
     currency: "RON",

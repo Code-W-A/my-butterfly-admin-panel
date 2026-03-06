@@ -29,16 +29,23 @@ const getPreferenceKeys = (preferences: string[] | undefined) => {
   return [...keys];
 };
 
+const normalizePackageRole = (role: unknown): PackageItemRole | undefined => {
+  if (role === "single" || role === "blade" || role === "forehand" || role === "backhand") return role;
+  if (role === "rubber_fh") return "forehand";
+  if (role === "rubber_bh") return "backhand";
+  return undefined;
+};
+
 const isPackageShapeEligible = (pkg: WithId<RecommendationPackage>) => {
   const items = pkg.items ?? [];
-  const roles = items.map((item) => item.role);
+  const roles = items.map((item) => normalizePackageRole(item.role));
   if (pkg.mode === "single") {
     return items.length === 1 && roles[0] === "single";
   }
   if (pkg.mode === "triple") {
     if (items.length !== 3) return false;
     if (roles.some((role) => !role)) return false;
-    const expected = new Set<PackageItemRole>(["blade", "rubber_fh", "rubber_bh"]);
+    const expected = new Set<PackageItemRole>(["blade", "forehand", "backhand"]);
     const actual = new Set<PackageItemRole>(roles as PackageItemRole[]);
     return expected.size === actual.size && [...expected].every((role) => actual.has(role));
   }

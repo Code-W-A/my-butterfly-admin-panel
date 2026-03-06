@@ -199,8 +199,8 @@ const formatTagValue = (map: VocabMap, value: string) => map[value] ?? value;
 const formatPackageRole = (role?: string) => {
   if (role === "single") return "Produs";
   if (role === "blade") return "Lemn";
-  if (role === "rubber_fh") return "Față FH";
-  if (role === "rubber_bh") return "Față BH";
+  if (role === "forehand" || role === "rubber_fh") return "Forehand";
+  if (role === "backhand" || role === "rubber_bh") return "Rever";
   return "Produs";
 };
 
@@ -1708,9 +1708,6 @@ export default function RecommendationTestPage() {
                   ) : null}
                   {selectedProductMatch.product.attributes.speed !== undefined ? (
                     <Badge variant="outline">Viteză: {selectedProductMatch.product.attributes.speed}</Badge>
-                  ) : null}
-                  {selectedProductMatch.product.attributes.weight !== undefined ? (
-                    <Badge variant="outline">Greutate: {selectedProductMatch.product.attributes.weight}</Badge>
                   ) : null}
                 </div>
               </div>

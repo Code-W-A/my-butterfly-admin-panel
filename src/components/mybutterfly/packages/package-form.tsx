@@ -53,8 +53,8 @@ type PackageFormValues = {
   mode: PackageMode;
   singleProductId: string;
   bladeProductId: string;
-  rubberFhProductId: string;
-  rubberBhProductId: string;
+  forehandProductId: string;
+  backhandProductId: string;
   attributes: {
     control?: number;
     spin?: number;
@@ -69,8 +69,8 @@ const formSchema = z.object({
   mode: z.enum(["single", "triple", "custom"]),
   singleProductId: z.string().optional(),
   bladeProductId: z.string().optional(),
-  rubberFhProductId: z.string().optional(),
-  rubberBhProductId: z.string().optional(),
+  forehandProductId: z.string().optional(),
+  backhandProductId: z.string().optional(),
   attributes: z.object({
     control: optionalNumber,
     spin: optionalNumber,
@@ -181,10 +181,18 @@ const mergeImportedScenarios = (
   return [...existing, ...appended];
 };
 
+const normalizeItemRole = (role: unknown): PackageItemRole | undefined => {
+  if (role === "single" || role === "blade" || role === "forehand" || role === "backhand") return role;
+  if (role === "rubber_fh") return "forehand";
+  if (role === "rubber_bh") return "backhand";
+  return undefined;
+};
+
 const toRoleMap = (items: RecommendationPackageItem[] | undefined) => {
   const next: Partial<Record<PackageItemRole, string>> = {};
   (items ?? []).forEach((item) => {
-    if (item.role) next[item.role] = item.productId;
+    const role = normalizeItemRole(item.role);
+    if (role) next[role] = item.productId;
   });
   return next;
 };
@@ -193,14 +201,14 @@ const toCustomDrafts = (items: RecommendationPackageItem[] | undefined): CustomI
   (items ?? []).map((item) => ({
     id: generateClientId(),
     productId: item.productId,
-    role: item.role,
+    ...(normalizeItemRole(item.role) ? { role: normalizeItemRole(item.role) } : {}),
   }));
 
 const formatRole = (role?: PackageItemRole) => {
   if (role === "single") return "Produs";
   if (role === "blade") return "Lemn";
-  if (role === "rubber_fh") return "Față FH";
-  if (role === "rubber_bh") return "Față BH";
+  if (role === "forehand") return "Forehand";
+  if (role === "backhand") return "Rever";
   return "Fără rol";
 };
 
@@ -408,8 +416,8 @@ export function PackageForm({
       mode: initialMode,
       singleProductId: roleMap.single ?? "",
       bladeProductId: roleMap.blade ?? "",
-      rubberFhProductId: roleMap.rubber_fh ?? "",
-      rubberBhProductId: roleMap.rubber_bh ?? "",
+      forehandProductId: roleMap.forehand ?? "",
+      backhandProductId: roleMap.backhand ?? "",
       attributes: {
         control: initialValues?.attributes?.control,
         spin: initialValues?.attributes?.spin,
@@ -529,14 +537,14 @@ export function PackageForm({
   const productsById = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
 
   const mode = form.watch("mode");
-  const selectedIds = form.watch(["singleProductId", "bladeProductId", "rubberFhProductId", "rubberBhProductId"]);
+  const selectedIds = form.watch(["singleProductId", "bladeProductId", "forehandProductId", "backhandProductId"]);
   const selectedProductIds = useMemo(() => {
     if (mode === "custom") {
       return customItems.map((item) => item.productId.trim()).filter(Boolean);
     }
-    const [singleProductId, bladeProductId, rubberFhProductId, rubberBhProductId] = selectedIds;
+    const [singleProductId, bladeProductId, forehandProductId, backhandProductId] = selectedIds;
     const ids =
-      mode === "single" ? [singleProductId] : [bladeProductId, rubberFhProductId, rubberBhProductId].filter(Boolean);
+      mode === "single" ? [singleProductId] : [bladeProductId, forehandProductId, backhandProductId].filter(Boolean);
     return ids.map((id) => id.trim()).filter(Boolean);
   }, [customItems, mode, selectedIds]);
   const selectedProducts = useMemo(
@@ -648,8 +656,8 @@ export function PackageForm({
     } else if (values.mode === "triple") {
       modeItems = [
         { role: "blade", productId: values.bladeProductId.trim() },
-        { role: "rubber_fh", productId: values.rubberFhProductId.trim() },
-        { role: "rubber_bh", productId: values.rubberBhProductId.trim() },
+        { role: "forehand", productId: values.forehandProductId.trim() },
+        { role: "backhand", productId: values.backhandProductId.trim() },
       ];
     } else {
       const trimmedItems = customItems.map((item) => ({
@@ -885,14 +893,14 @@ export function PackageForm({
                   name="bladeProductId"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Lemn (blade)</FormLabel>
+                      <FormLabel>Lemn</FormLabel>
                       <PackageProductPicker
                         products={products}
                         value={field.value ?? ""}
                         onChange={field.onChange}
                         placeholder="Selectează lemnul"
                         dialogTitle="Selectează produsul pentru lemn"
-                        dialogDescription="Alege produsul pentru rolul blade."
+                        dialogDescription="Alege produsul pentru rolul lemn."
                       />
                     </FormItem>
                   )}
@@ -900,17 +908,17 @@ export function PackageForm({
 
                 <FormField
                   control={form.control}
-                  name="rubberFhProductId"
+                  name="forehandProductId"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Față forehand (rubber_fh)</FormLabel>
+                      <FormLabel>Forehand</FormLabel>
                       <PackageProductPicker
                         products={products}
                         value={field.value ?? ""}
                         onChange={field.onChange}
-                        placeholder="Selectează fața FH"
-                        dialogTitle="Selectează produsul pentru fața FH"
-                        dialogDescription="Alege produsul pentru rolul rubber_fh."
+                        placeholder="Selectează forehand"
+                        dialogTitle="Selectează produsul pentru forehand"
+                        dialogDescription="Alege produsul pentru rolul forehand."
                       />
                     </FormItem>
                   )}
@@ -918,17 +926,17 @@ export function PackageForm({
 
                 <FormField
                   control={form.control}
-                  name="rubberBhProductId"
+                  name="backhandProductId"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Față backhand (rubber_bh)</FormLabel>
+                      <FormLabel>Rever</FormLabel>
                       <PackageProductPicker
                         products={products}
                         value={field.value ?? ""}
                         onChange={field.onChange}
-                        placeholder="Selectează fața BH"
-                        dialogTitle="Selectează produsul pentru fața BH"
-                        dialogDescription="Alege produsul pentru rolul rubber_bh."
+                        placeholder="Selectează rever"
+                        dialogTitle="Selectează produsul pentru rever"
+                        dialogDescription="Alege produsul pentru rolul backhand."
                       />
                     </FormItem>
                   )}
@@ -974,8 +982,8 @@ export function PackageForm({
                               <SelectItem value={ROLE_NONE}>Fără rol</SelectItem>
                               <SelectItem value="single">{formatRole("single")}</SelectItem>
                               <SelectItem value="blade">{formatRole("blade")}</SelectItem>
-                              <SelectItem value="rubber_fh">{formatRole("rubber_fh")}</SelectItem>
-                              <SelectItem value="rubber_bh">{formatRole("rubber_bh")}</SelectItem>
+                              <SelectItem value="forehand">{formatRole("forehand")}</SelectItem>
+                              <SelectItem value="backhand">{formatRole("backhand")}</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>

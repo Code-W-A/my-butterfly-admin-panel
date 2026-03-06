@@ -20,8 +20,8 @@ import type { RecommendationPackage, WithId } from "@/lib/firestore/types";
 const formatRole = (role?: string) => {
   if (role === "single") return "Produs";
   if (role === "blade") return "Lemn";
-  if (role === "rubber_fh") return "Față FH";
-  if (role === "rubber_bh") return "Față BH";
+  if (role === "forehand" || role === "rubber_fh") return "Forehand";
+  if (role === "backhand" || role === "rubber_bh") return "Rever";
   return "Fără rol";
 };
 

@@ -36,11 +36,11 @@ const MAX_CUSTOM_ITEMS = 10;
 const ROLE_ORDER: Record<PackageItemRole, number> = {
   single: 0,
   blade: 1,
-  rubber_fh: 2,
-  rubber_bh: 3,
+  forehand: 2,
+  backhand: 3,
 };
 
-const TRIPLE_ROLES: PackageItemRole[] = ["blade", "rubber_fh", "rubber_bh"];
+const TRIPLE_ROLES: PackageItemRole[] = ["blade", "forehand", "backhand"];
 
 type PackagePayloadInput = Omit<RecommendationPackage, "createdAt" | "updatedAt" | "totalPrice" | "currency">;
 
@@ -75,7 +75,7 @@ const assertValidItemsForMode = (mode: PackageMode, items: RecommendationPackage
     const roleSet = new Set(items.map((item) => item.role as PackageItemRole));
     const expectedSet = new Set(TRIPLE_ROLES);
     if (roleSet.size !== expectedSet.size || [...expectedSet].some((role) => !roleSet.has(role))) {
-      throw new Error("Pachetul triple trebuie să conțină rolurile `blade`, `rubber_fh`, `rubber_bh`.");
+      throw new Error("Pachetul triple trebuie să conțină rolurile `blade`, `forehand`, `backhand`.");
     }
     return;
   }
@@ -93,9 +93,11 @@ const normalizeRole = (value: unknown): PackageItemRole | undefined => {
   if (typeof value !== "string") throw new Error("Rolul item-ului este invalid.");
   const role = value.trim();
   if (!role) return undefined;
-  if (role === "single" || role === "blade" || role === "rubber_fh" || role === "rubber_bh") {
+  if (role === "single" || role === "blade" || role === "forehand" || role === "backhand") {
     return role;
   }
+  if (role === "rubber_fh") return "forehand";
+  if (role === "rubber_bh") return "backhand";
   throw new Error("Rolul item-ului este invalid.");
 };
 

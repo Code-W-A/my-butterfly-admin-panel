@@ -209,6 +209,7 @@ export default function SettingsPage() {
           ) : null}
         </CardContent>
       </Card>
+      {/* Catalog echipamente ascuns temporar la cerere */}
     </div>
   );
 }

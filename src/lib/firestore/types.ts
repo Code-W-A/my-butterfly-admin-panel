@@ -11,6 +11,12 @@ export type Questionnaire = {
   updatedAt: Timestamp;
 };
 
+export type EquipmentItem = {
+  source: "catalog" | "custom";
+  catalogId: string;
+  label: string;
+};
+
 export type QuestionnaireQuestionOption = {
   value: string;
   label: string;
@@ -77,7 +83,8 @@ export type ProductRecommendationScenario = {
 
 export type PackageMode = "single" | "triple" | "custom";
 
-export type PackageItemRole = "single" | "blade" | "rubber_fh" | "rubber_bh";
+export type PackageItemRole = "single" | "blade" | "forehand" | "backhand";
+export type LegacyPackageItemRole = "rubber_fh" | "rubber_bh";
 
 export type RecommendationPackageItem = {
   role?: PackageItemRole;
@@ -108,9 +115,35 @@ export type RecommendationRuleSet = {
 };
 
 export type UserProfile = {
-  createdAt: Timestamp;
-  lastSeenAt: Timestamp;
+  firstName?: string;
+  lastName?: string;
+  displayName?: string;
+  email?: string;
+  phone?: string;
+  avatarUrl?: string;
+  language?: string;
+  equipment?: {
+    blade: EquipmentItem | null;
+    forehand: EquipmentItem | null;
+    backhand: EquipmentItem | null;
+  };
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+  lastSeenAt?: Timestamp;
   platform?: "ios" | "android";
+};
+
+export type EquipmentCatalogItem = {
+  id: string;
+  name: string;
+  brand?: string;
+  active: boolean;
+  updatedAt?: Timestamp;
+};
+
+export type EquipmentCatalog = {
+  blades: EquipmentCatalogItem[];
+  rubbers: EquipmentCatalogItem[];
 };
 
 export type SpecialistRequestReply = {

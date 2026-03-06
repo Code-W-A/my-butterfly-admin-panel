@@ -17,6 +17,7 @@ export type HelpKey =
   | "products.edit"
   | "recommendation-rules"
   | "recommendations.test"
+  | "users"
   | "requests.list"
   | "requests.detail"
   | "questionnaire-completions.list"
@@ -77,6 +78,42 @@ export const HELP_CONTENT: Record<HelpKey, { title: string; sections: HelpSectio
           "Dacă apare o eroare de acces, verifică dacă ești conectat cu un cont de administrator.",
           "Pentru actualizare, reîncarcă pagina. Graficele se recitesc și când schimbi chestionarul / perioada / metrica.",
           "Pentru debugging recomandări, folosește „Test recomandări” și verifică pragul minim (%) din Setări.",
+        ],
+      },
+    ],
+  },
+
+  users: {
+    title: "Ajutor — Utilizatori",
+    sections: [
+      {
+        title: "Ce faci aici",
+        paragraphs: [
+          "Gestionezi profilul utilizatorilor și echipamentul folosit în aplicația mobilă.",
+          "Poți seta pentru fiecare utilizator Lemn, Forehand și Rever.",
+        ],
+      },
+      {
+        title: "Profil",
+        bullets: [
+          "Câmpuri disponibile: Prenume, Nume, Display Name, Avatar URL.",
+          "Valorile se salvează în documentul users/{uid}.",
+        ],
+      },
+      {
+        title: "Echipament",
+        bullets: [
+          "Fiecare slot (Lemn/Forehand/Rever) poate fi gol (null) sau setat.",
+          "Sursă Catalog: alegi item din settings/equipmentCatalog.",
+          "Sursă Custom: completezi text liber (label) și opțional catalogId.",
+          "Datele se salvează în equipment.blade/forehand/backhand.",
+        ],
+      },
+      {
+        title: "Catalog",
+        notes: [
+          "Catalogul este gestionat din Setări, secțiunea „Catalog echipamente (mobile)”.",
+          "Pentru compatibilitate, aplicația poate citi fallback-uri legacy dacă documentul nou lipsește.",
         ],
       },
     ],

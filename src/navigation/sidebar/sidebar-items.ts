@@ -10,6 +10,7 @@ import {
   Package2,
   Settings,
   ShoppingBag,
+  Users,
 } from "lucide-react";
 
 export interface NavSubItem {
@@ -76,6 +77,11 @@ export const sidebarItems: NavGroup[] = [
         title: "Cereri",
         url: "/dashboard/requests",
         icon: MessageSquare,
+      },
+      {
+        title: "Utilizatori",
+        url: "/dashboard/users",
+        icon: Users,
       },
       {
         title: "Vocabulary",

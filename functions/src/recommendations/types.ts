@@ -58,7 +58,7 @@ export type Product = {
 };
 
 export type PackageMode = "single" | "triple" | "custom";
-export type PackageItemRole = "single" | "blade" | "rubber_fh" | "rubber_bh";
+export type PackageItemRole = "single" | "blade" | "forehand" | "backhand";
 
 export type RecommendationPackageItem = {
   role?: PackageItemRole;
@@ -179,7 +179,7 @@ export type ProductLite = {
   price: number;
   currency: "EUR" | "RON";
   tags: { level: string[]; style: string[]; distance: string[] };
-  attributes: { control?: number; spin?: number; speed?: number; weight?: number };
+  attributes: { control?: number; spin?: number; speed?: number };
   source?: { provider: "prestashop"; prestashopProductId: string };
 };
 
@@ -189,7 +189,7 @@ export type PackageLite = {
   title: string;
   description?: string;
   mode: "single" | "triple" | "custom";
-  items: Array<{ role?: "single" | "blade" | "rubber_fh" | "rubber_bh"; productId: string }>;
+  items: Array<{ role?: "single" | "blade" | "forehand" | "backhand"; productId: string }>;
   attributes?: { control?: number; spin?: number; speed?: number };
   totalPrice: number;
   currency: "EUR" | "RON";

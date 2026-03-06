@@ -16,6 +16,11 @@ const buildAuthHeader = (apiKey: string) => {
   return `Basic ${token}`;
 };
 
+const isDebugEnabled = () =>
+  String(process.env.NEXT_PUBLIC_DEBUG ?? "")
+    .trim()
+    .toLowerCase() === "true";
+
 const normalizeName = (value: unknown) => {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) {
@@ -136,7 +141,22 @@ const extractImageIds = (product: Record<string, unknown>) => {
   return extractImageIdsFromPayload(images);
 };
 
-const fetchImageIds = async (baseUrl: string, apiKey: string, productId: string) => {
+const fetchImageIds = async (
+  baseUrl: string,
+  apiKey: string,
+  productId: string,
+  includeDebug?: boolean,
+): Promise<{
+  ids: number[];
+  debug?: {
+    requestUrl: string;
+    status: number;
+    statusText: string;
+    headers: Record<string, string>;
+    rawBody: string;
+    parsedBody?: unknown;
+  };
+}> => {
   const url = new URL(`${baseUrl}/api/images/products/${productId}`);
   url.searchParams.set("output_format", "JSON");
   url.searchParams.set("io_format", "JSON");
@@ -163,11 +183,62 @@ const fetchImageIds = async (baseUrl: string, apiKey: string, productId: string)
     parsed = undefined;
   }
   const ids = extractImageIdsFromPayload(parsed, productId);
-  return ids;
+  return {
+    ids,
+    ...(includeDebug
+      ? {
+          debug: {
+            requestUrl: url.toString(),
+            status: response.status,
+            statusText: response.statusText,
+            headers: Object.fromEntries(response.headers.entries()),
+            rawBody: text,
+            ...(parsed !== undefined ? { parsedBody: parsed } : {}),
+          },
+        }
+      : {}),
+  };
+};
+
+const fetchPrestashopProbe = async (
+  baseUrl: string,
+  apiKey: string,
+  path: string,
+  params: Record<string, string> = {},
+) => {
+  const url = new URL(`${baseUrl}${path}`);
+  Object.entries(params).forEach(([key, value]) => {
+    url.searchParams.set(key, value);
+  });
+  const response = await fetch(url.toString(), {
+    headers: {
+      Authorization: buildAuthHeader(apiKey),
+      Accept: "application/json",
+    },
+    cache: "no-store",
+  });
+  const rawBody = await response.text().catch(() => "");
+  let parsedBody: unknown;
+  try {
+    parsedBody = rawBody ? JSON.parse(rawBody) : undefined;
+  } catch {
+    parsedBody = undefined;
+  }
+
+  return {
+    requestUrl: url.toString(),
+    status: response.status,
+    statusText: response.statusText,
+    responseHeaders: Object.fromEntries(response.headers.entries()),
+    rawBody,
+    ...(parsedBody !== undefined ? { parsedBody } : {}),
+  };
 };
 
 export async function GET(_request: NextRequest, context: { params: Promise<{ id: string }> }) {
   try {
+    const debugQuery = _request.nextUrl.searchParams.get("debug");
+    const includeDebug = isDebugEnabled() && debugQuery === "full";
     const { baseUrl, apiKey } = getEnv();
     const { id } = await context.params;
     const url = new URL(`${baseUrl}/api/products/${id}`);
@@ -183,14 +254,33 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ id
       cache: "no-store",
     });
 
+    const rawBody = await response.text();
+
     if (!response.ok) {
-      const text = await response.text();
-      return NextResponse.json({ error: "PrestaShop request failed", details: text }, { status: response.status });
+      return NextResponse.json(
+        {
+          error: "PrestaShop request failed",
+          details: rawBody,
+          ...(includeDebug
+            ? {
+                debug: {
+                  requestUrl: url.toString(),
+                  status: response.status,
+                  statusText: response.statusText,
+                  responseHeaders: Object.fromEntries(response.headers.entries()),
+                  rawBody,
+                },
+              }
+            : {}),
+        },
+        { status: response.status },
+      );
     }
 
-    const data = (await response.json()) as {
+    const data = (rawBody ? JSON.parse(rawBody) : {}) as {
       product?: Record<string, unknown>;
       products?: Array<Record<string, unknown>>;
+      [key: string]: unknown;
     };
 
     const product = data.product ?? data.products?.[0] ?? {};
@@ -199,8 +289,20 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ id
     }
     const idDefaultImage = toImageId(product.id_default_image);
     let imageIds = extractImageIds(product);
+    let imagesDebug:
+      | {
+          requestUrl: string;
+          status: number;
+          statusText: string;
+          headers: Record<string, string>;
+          rawBody: string;
+          parsedBody?: unknown;
+        }
+      | undefined;
     if (imageIds.length === 0) {
-      imageIds = await fetchImageIds(baseUrl, apiKey, id);
+      const imageResult = await fetchImageIds(baseUrl, apiKey, id, includeDebug);
+      imageIds = imageResult.ids;
+      imagesDebug = imageResult.debug;
     }
     if (idDefaultImage && !imageIds.includes(idDefaultImage)) imageIds.unshift(idDefaultImage);
     const imageUrls = imageIds.map((imageId) => buildPrestashopPublicImageUrl(imageId));
@@ -213,6 +315,60 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ id
       : undefined;
     const currency = process.env.PRESTASHOP_CURRENCY === "RON" ? "RON" : "EUR";
     const priceEur = toNumber(product.price);
+
+    let probes:
+      | {
+          productSchemaSynopsis: Awaited<ReturnType<typeof fetchPrestashopProbe>>;
+          productSchemaBlank: Awaited<ReturnType<typeof fetchPrestashopProbe>>;
+          productFeatureList: Awaited<ReturnType<typeof fetchPrestashopProbe>>;
+          productFeatureValueList: Awaited<ReturnType<typeof fetchPrestashopProbe>>;
+          productCoreWithAssociations: Awaited<ReturnType<typeof fetchPrestashopProbe>>;
+        }
+      | undefined;
+    if (includeDebug) {
+      const [
+        productSchemaSynopsis,
+        productSchemaBlank,
+        productFeatureList,
+        productFeatureValueList,
+        productCoreWithAssociations,
+      ] = await Promise.all([
+        fetchPrestashopProbe(baseUrl, apiKey, "/api/products", {
+          schema: "synopsis",
+          output_format: "JSON",
+          io_format: "JSON",
+        }),
+        fetchPrestashopProbe(baseUrl, apiKey, "/api/products", {
+          schema: "blank",
+          output_format: "JSON",
+          io_format: "JSON",
+        }),
+        fetchPrestashopProbe(baseUrl, apiKey, "/api/product_features", {
+          display: "full",
+          "filter[id_product]": `[${id}]`,
+          output_format: "JSON",
+          io_format: "JSON",
+        }),
+        fetchPrestashopProbe(baseUrl, apiKey, "/api/product_feature_values", {
+          display: "full",
+          output_format: "JSON",
+          io_format: "JSON",
+          limit: "20",
+        }),
+        fetchPrestashopProbe(baseUrl, apiKey, `/api/products/${id}`, {
+          display: "[id,associations]",
+          output_format: "JSON",
+          io_format: "JSON",
+        }),
+      ]);
+      probes = {
+        productSchemaSynopsis,
+        productSchemaBlank,
+        productFeatureList,
+        productFeatureValueList,
+        productCoreWithAssociations,
+      };
+    }
 
     return NextResponse.json({
       id: String(product.id ?? id),
@@ -227,6 +383,22 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ id
       productUrl,
       stock: product.stock ?? undefined,
       prestashopFull: product,
+      ...(includeDebug
+        ? {
+            debug: {
+              requestUrl: url.toString(),
+              status: response.status,
+              statusText: response.statusText,
+              responseHeaders: Object.fromEntries(response.headers.entries()),
+              rawBody,
+              parsedRoot: data,
+              parsedProduct: product,
+              derivedImageIds: imageIds,
+              ...(probes ? { probes } : {}),
+              ...(imagesDebug ? { imagesEndpoint: imagesDebug } : {}),
+            },
+          }
+        : {}),
     });
   } catch (error) {
     return NextResponse.json({ error: String(error ?? "Unknown error") }, { status: 500 });

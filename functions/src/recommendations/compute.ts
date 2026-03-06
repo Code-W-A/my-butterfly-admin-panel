@@ -64,7 +64,6 @@ const toProductLite = (product: WithId<Product>): ProductLite => ({
     ...(product.attributes?.control !== undefined ? { control: product.attributes.control } : {}),
     ...(product.attributes?.spin !== undefined ? { spin: product.attributes.spin } : {}),
     ...(product.attributes?.speed !== undefined ? { speed: product.attributes.speed } : {}),
-    ...(product.attributes?.weight !== undefined ? { weight: product.attributes.weight } : {}),
   },
   ...(product.source?.provider === "prestashop" && product.source.prestashopProductId
     ? {
@@ -76,16 +75,26 @@ const toProductLite = (product: WithId<Product>): ProductLite => ({
     : {}),
 });
 
+const toCanonicalPackageRole = (role: unknown): PackageLite["items"][number]["role"] => {
+  if (role === "single" || role === "blade" || role === "forehand" || role === "backhand") return role;
+  if (role === "rubber_fh") return "forehand";
+  if (role === "rubber_bh") return "backhand";
+  return undefined;
+};
+
 const toPackageLite = (pkg: WithId<RecommendationPackage>): PackageLite => ({
   id: pkg.id,
   active: Boolean(pkg.active),
   title: pkg.title,
   ...(pkg.description?.trim() ? { description: pkg.description } : {}),
   mode: pkg.mode,
-  items: (pkg.items ?? []).map((item) => ({
-    productId: item.productId,
-    ...(item.role ? { role: item.role } : {}),
-  })),
+  items: (pkg.items ?? []).map((item) => {
+    const role = toCanonicalPackageRole(item.role);
+    return {
+      productId: item.productId,
+      ...(role ? { role } : {}),
+    };
+  }),
   ...(pkg.attributes
     ? {
         attributes: {

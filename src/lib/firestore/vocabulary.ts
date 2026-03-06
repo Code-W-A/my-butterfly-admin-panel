@@ -162,11 +162,14 @@ export async function createVocabularyKey(params: {
   const existing = await getDoc(keyRef);
   if (existing.exists()) throw new Error("Cheia există deja.");
 
+  const trimmedDescription = params.description?.trim();
+  const trimmedStandardQuestion = params.standardQuestion?.trim();
+
   const payload: VocabularyCategory = {
     key: normalizedKey,
     title: params.title.trim(),
-    description: params.description?.trim() || undefined,
-    standardQuestion: params.standardQuestion?.trim() || undefined,
+    ...(trimmedDescription ? { description: trimmedDescription } : {}),
+    ...(trimmedStandardQuestion ? { standardQuestion: trimmedStandardQuestion } : {}),
     order: params.order ?? 0,
     active: params.active ?? true,
   };

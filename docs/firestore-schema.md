@@ -52,6 +52,14 @@ Subcollection: `questionnaires/{questionnaireId}/questions/{questionId}`
 - `specialistRequestId?`: string
 
 ### 3) `users/{uid}`
+- `firstName?`: string
+- `lastName?`: string
+- `displayName?`: string
+- `avatarUrl?`: string
+- `equipment?`:
+  - `blade`: `{ source: "catalog" | "custom"; catalogId: string; label: string } | null`
+  - `forehand`: `{ source: "catalog" | "custom"; catalogId: string; label: string } | null`
+  - `backhand`: `{ source: "catalog" | "custom"; catalogId: string; label: string } | null`
 - `createdAt`: timestamp
 - `lastSeenAt`: timestamp
 - `platform?`: `"ios" | "android"`
@@ -96,6 +104,18 @@ Used to signal content updates to the mobile app (cache invalidation).
 - `exchangeRateEurRon`: number (default fallback: `4.9`)
 - `vatPercent`: number (default fallback: `21`)
 - `updatedAt`: timestamp (serverTimestamp)
+
+### Settings: `settings/equipmentCatalog` (preferred for mobile)
+- `blades`: `CatalogItem[]`
+- `rubbers`: `CatalogItem[]`
+- `updatedAt`: timestamp (serverTimestamp)
+
+Where `CatalogItem` is:
+- `{ id: string; name: string; brand?: string; active: boolean; updatedAt?: timestamp }`
+
+Backward compatibility:
+- Legacy deployments may still keep equipment catalog under `app_settings/equipmentCatalog` or an `equipmentCatalog` collection.
+- Admin reads legacy sources, but current writes target `settings/equipmentCatalog`.
 
 ## Suggested Indexes
 - `questionnaireCompletions` ordered by `createdAt desc`
