@@ -4,6 +4,7 @@ import type { FirebaseError } from "firebase/app";
 import { getFunctions, httpsCallable } from "firebase/functions";
 
 import { initFirebase } from "@/lib/firebase/client";
+import type { ProductRecommendationScenario } from "@/lib/firestore/types";
 
 export type ComputeRecommendationsRequest = {
   questionnaireId: string;
@@ -26,13 +27,6 @@ export type RecommendationInput = {
 export type RecommendationSkippedQuestion = {
   questionId: string;
   reason: "rule_not_met" | "inactive" | "prerequisite_not_answered";
-};
-
-type RecommendationScenario = {
-  active: boolean;
-  order: number;
-  explanationTemplate: string;
-  conditions: Record<string, string[] | number | undefined>;
 };
 
 type ProductLite = {
@@ -64,7 +58,7 @@ type PackageLite = {
 
 export type ProductMatch = {
   product: ProductLite;
-  scenario: RecommendationScenario;
+  scenario: ProductRecommendationScenario;
   fitScore: number;
   matchPercent: number;
   matchedPreferences: string[];
@@ -73,7 +67,7 @@ export type ProductMatch = {
 
 export type PackageMatch = {
   package: PackageLite;
-  scenario: RecommendationScenario;
+  scenario: ProductRecommendationScenario;
   fitScore: number;
   matchPercent: number;
   matchedPreferences: string[];

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import Image from "next/image";
 
@@ -9,11 +9,13 @@ import { Plus, Trash2 } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
+import { OptionMultiSelect } from "@/components/mybutterfly/forms/option-multi-select";
 import { VocabularyMultiSelect } from "@/components/mybutterfly/forms/vocabulary-multi-select";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
@@ -23,10 +25,28 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
 import { deleteProductImage, uploadProductImage } from "@/lib/firebase/storage.client";
+import { listQuestionnaires } from "@/lib/firestore/questionnaires";
+import { listQuestions } from "@/lib/firestore/questions";
 import { listRuleSets } from "@/lib/firestore/recommendation-rule-sets";
-import type { Product, ProductRecommendationScenario, RecommendationRuleSet, WithId } from "@/lib/firestore/types";
+import type {
+  Product,
+  Questionnaire,
+  QuestionnaireQuestion,
+  RecommendationRuleSet,
+  WithId,
+} from "@/lib/firestore/types";
 import { listVocabularyKeys, type VocabularyCategory } from "@/lib/firestore/vocabulary";
 import { convertEurToRonWithVat, normalizePricingConfig, type PricingConfig } from "@/lib/pricing/prestashop-price";
+import {
+  analyzeQuestionnaireScenario,
+  createLegacyScenarioDraft,
+  createQuestionnaireScenarioDraft,
+  formatScenarioSummary,
+  type ScenarioDraft,
+  serializeScenarioDraft,
+  toScenarioDraft,
+  updateScenarioQuestionSelection,
+} from "@/lib/recommendations/scenario-utils";
 
 const optionalNumber = z.preprocess(
   (value) => (value === "" || value === null || value === undefined ? undefined : Number(value)),
@@ -85,64 +105,9 @@ type PendingImageFile = {
   previewUrl: string;
 };
 
-type ScenarioDraft = {
-  id: string;
-  active: boolean;
-  order: number;
-  explanationTemplate: string;
-  conditions: Record<string, string[]>;
-};
-
 const generateClientId = () => {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-};
-
-const normalizeConditionValues = (value: unknown) => {
-  if (Array.isArray(value)) return value.filter((item) => typeof item === "string" && item.trim());
-  if (typeof value === "string" && value.trim()) return [value.trim()];
-  return [];
-};
-
-const buildConditionMap = (keys: string[], source: ProductRecommendationScenario["conditions"] | undefined) => {
-  const result: Record<string, string[]> = {};
-  keys.forEach((key) => {
-    const value = source?.[key];
-    result[key] = normalizeConditionValues(value);
-  });
-  if (source) {
-    Object.entries(source).forEach(([key, value]) => {
-      if (key in result) return;
-      const normalized = normalizeConditionValues(value);
-      if (normalized.length) result[key] = normalized;
-    });
-  }
-  return result;
-};
-
-const buildConditions = (scenario: ScenarioDraft): ProductRecommendationScenario["conditions"] =>
-  Object.fromEntries(
-    Object.entries(scenario.conditions).filter(([, values]) => Array.isArray(values) && values.length > 0),
-  );
-
-const formatScenarioSummary = (
-  scenario: ScenarioDraft,
-  categories: Array<Pick<VocabularyCategory, "key" | "title">>,
-) => {
-  const parts: string[] = [];
-  const knownKeys = new Set(categories.map((category) => category.key));
-  categories.forEach((category) => {
-    const values = scenario.conditions[category.key] ?? [];
-    if (values.length) parts.push(`${category.title}: ${values.length}`);
-  });
-  Object.entries(scenario.conditions).forEach(([key, values]) => {
-    if (knownKeys.has(key)) return;
-    if (values.length) parts.push(`${key}: ${values.length}`);
-  });
-  if (scenario.explanationTemplate.trim()) {
-    parts.push("Are explicație");
-  }
-  return parts.length ? parts.join(" • ") : "Fără condiții setate";
 };
 
 export function ProductForm({
@@ -189,10 +154,20 @@ export function ProductForm({
   const [editingScenarioIndex, setEditingScenarioIndex] = useState<number | null>(null);
   const [scenarioDialogMode, setScenarioDialogMode] = useState<"add" | "edit">("edit");
   const [isRuleSetDialogOpen, setIsRuleSetDialogOpen] = useState(false);
+  const [isQuestionnaireDialogOpen, setIsQuestionnaireDialogOpen] = useState(false);
   const [ruleSets, setRuleSets] = useState<WithId<RecommendationRuleSet>[]>([]);
   const [ruleSetSelection, setRuleSetSelection] = useState<string[]>([]);
   const [isRuleSetLoading, setIsRuleSetLoading] = useState(false);
   const [ruleSetError, setRuleSetError] = useState<string | null>(null);
+  const [questionnaires, setQuestionnaires] = useState<WithId<Questionnaire>[]>([]);
+  const [isQuestionnaireLoading, setIsQuestionnaireLoading] = useState(false);
+  const [questionnaireError, setQuestionnaireError] = useState<string | null>(null);
+  const [selectedQuestionnaireId, setSelectedQuestionnaireId] = useState("");
+  const [questionnaireQuestionsById, setQuestionnaireQuestionsById] = useState<
+    Record<string, WithId<QuestionnaireQuestion>[]>
+  >({});
+  const [questionnaireQuestionsLoading, setQuestionnaireQuestionsLoading] = useState<Record<string, boolean>>({});
+  const [questionnaireQuestionsError, setQuestionnaireQuestionsError] = useState<Record<string, string | null>>({});
   const [vocabularyCategories, setVocabularyCategories] = useState<WithId<VocabularyCategory>[]>([]);
   const [vocabularyError, setVocabularyError] = useState<string | null>(null);
   const sortedVocabularyCategories = useMemo(
@@ -205,6 +180,51 @@ export function ProductForm({
   );
 
   const ruleSetSelectionSet = useMemo(() => new Set(ruleSetSelection), [ruleSetSelection]);
+  const selectedQuestionnaire = useMemo(
+    () => questionnaires.find((item) => item.id === selectedQuestionnaireId) ?? null,
+    [questionnaires, selectedQuestionnaireId],
+  );
+  const selectedQuestionnaireQuestions = useMemo(
+    () => (selectedQuestionnaireId ? (questionnaireQuestionsById[selectedQuestionnaireId] ?? []) : []),
+    [questionnaireQuestionsById, selectedQuestionnaireId],
+  );
+  const hasSelectedQuestionnaireData = selectedQuestionnaireId
+    ? selectedQuestionnaireId in questionnaireQuestionsById
+    : false;
+  const selectedQuestionnaireAnalysis = useMemo(
+    () =>
+      selectedQuestionnaireId && hasSelectedQuestionnaireData
+        ? analyzeQuestionnaireScenario(
+            {
+              conditions: {},
+            },
+            selectedQuestionnaireQuestions,
+          )
+        : null,
+    [hasSelectedQuestionnaireData, selectedQuestionnaireId, selectedQuestionnaireQuestions],
+  );
+  const editingScenario = editingScenarioIndex !== null ? (scenarios[editingScenarioIndex] ?? null) : null;
+  const editingQuestionnaireId = editingScenario?.questionnaireBinding?.questionnaireId ?? "";
+  const hasEditingQuestionnaireData = editingQuestionnaireId
+    ? editingQuestionnaireId in questionnaireQuestionsById
+    : false;
+  const editingQuestionnaireQuestions = useMemo(
+    () => (editingQuestionnaireId ? (questionnaireQuestionsById[editingQuestionnaireId] ?? []) : []),
+    [editingQuestionnaireId, questionnaireQuestionsById],
+  );
+  const editingQuestionnaireAnalysis = useMemo(
+    () =>
+      editingQuestionnaireId && editingScenario && hasEditingQuestionnaireData
+        ? analyzeQuestionnaireScenario(editingScenario, editingQuestionnaireQuestions)
+        : null,
+    [editingQuestionnaireId, editingQuestionnaireQuestions, editingScenario, hasEditingQuestionnaireData],
+  );
+  const editingQuestionnaireError = editingQuestionnaireId
+    ? (questionnaireQuestionsError[editingQuestionnaireId] ?? null)
+    : null;
+  const isEditingQuestionnaireLoading = editingQuestionnaireId
+    ? Boolean(questionnaireQuestionsLoading[editingQuestionnaireId])
+    : false;
   const normalizedPricing = useMemo(() => normalizePricingConfig(pricingConfig), [pricingConfig]);
   const watchedCurrency = form.watch("currency");
   const previousCurrencyRef = useRef<"EUR" | "RON">(form.getValues("currency"));
@@ -231,13 +251,9 @@ export function ProductForm({
       return;
     }
     setScenarios(
-      (initialValues.recommendationScenarios ?? []).map((scenario) => ({
-        id: generateClientId(),
-        active: scenario.active,
-        order: scenario.order,
-        explanationTemplate: scenario.explanationTemplate ?? "",
-        conditions: buildConditionMap(vocabularyKeys, scenario.conditions),
-      })),
+      (initialValues.recommendationScenarios ?? []).map((scenario) =>
+        toScenarioDraft(scenario, vocabularyKeys, generateClientId()),
+      ),
     );
   }, [initialValues, vocabularyKeys]);
 
@@ -273,6 +289,71 @@ export function ProductForm({
         setIsRuleSetLoading(false);
       });
   }, [isRuleSetDialogOpen]);
+
+  const loadQuestionnaires = useCallback(async () => {
+    setIsQuestionnaireLoading(true);
+    setQuestionnaireError(null);
+    try {
+      const items = await listQuestionnaires();
+      setQuestionnaires(items);
+      setSelectedQuestionnaireId((current) => {
+        if (current && items.some((item) => item.id === current)) return current;
+        return items[0]?.id ?? "";
+      });
+    } catch (err) {
+      logFirebaseError("Products: loadQuestionnaires", err);
+      const info = getFirebaseErrorInfo(err);
+      setQuestionnaireError(info.message || "Nu pot încărca chestionarele.");
+      setQuestionnaires([]);
+    } finally {
+      setIsQuestionnaireLoading(false);
+    }
+  }, []);
+
+  const loadQuestionnaireQuestions = useCallback(
+    async (questionnaireId: string) => {
+      const normalizedId = questionnaireId.trim();
+      if (!normalizedId) return;
+      if (questionnaireQuestionsById[normalizedId] || questionnaireQuestionsLoading[normalizedId]) return;
+
+      setQuestionnaireQuestionsLoading((prev) => ({ ...prev, [normalizedId]: true }));
+      setQuestionnaireQuestionsError((prev) => ({ ...prev, [normalizedId]: null }));
+      try {
+        const items = await listQuestions(normalizedId);
+        setQuestionnaireQuestionsById((prev) => ({ ...prev, [normalizedId]: items }));
+      } catch (err) {
+        logFirebaseError("Products: loadQuestionnaireQuestions", err);
+        const info = getFirebaseErrorInfo(err);
+        setQuestionnaireQuestionsError((prev) => ({
+          ...prev,
+          [normalizedId]: info.message || "Nu pot încărca întrebările chestionarului.",
+        }));
+      } finally {
+        setQuestionnaireQuestionsLoading((prev) => ({ ...prev, [normalizedId]: false }));
+      }
+    },
+    [questionnaireQuestionsById, questionnaireQuestionsLoading],
+  );
+
+  useEffect(() => {
+    if (!isQuestionnaireDialogOpen) return;
+    void loadQuestionnaires();
+  }, [isQuestionnaireDialogOpen, loadQuestionnaires]);
+
+  useEffect(() => {
+    if (!selectedQuestionnaireId) return;
+    void loadQuestionnaireQuestions(selectedQuestionnaireId);
+  }, [loadQuestionnaireQuestions, selectedQuestionnaireId]);
+
+  useEffect(() => {
+    const questionnaireIds = [
+      ...new Set(scenarios.map((scenario) => scenario.questionnaireBinding?.questionnaireId).filter(Boolean)),
+    ];
+    questionnaireIds.forEach((questionnaireId) => {
+      if (!questionnaireId) return;
+      void loadQuestionnaireQuestions(questionnaireId);
+    });
+  }, [loadQuestionnaireQuestions, scenarios]);
 
   useEffect(() => {
     if (!prefillValues) return;
@@ -341,12 +422,7 @@ export function ProductForm({
 
   const handleSubmit = async (values: ProductFormValues) => {
     const attributes = compactNumberFields(values.attributes);
-    const recommendationScenarios = scenarios.map((scenario) => ({
-      active: scenario.active,
-      order: scenario.order,
-      explanationTemplate: scenario.explanationTemplate.trim(),
-      conditions: buildConditions(scenario),
-    }));
+    const recommendationScenarios = scenarios.map(serializeScenarioDraft);
     const activeScenarios = scenarios.filter((s) => s.active);
     const tags = {
       level: [...new Set(activeScenarios.flatMap((s) => s.conditions.level ?? []))],
@@ -462,13 +538,7 @@ export function ProductForm({
 
   const handleAddScenario = () => {
     const nextOrder = scenarios.length ? Math.max(...scenarios.map((s) => s.order)) + 1 : 0;
-    const nextScenario: ScenarioDraft = {
-      id: generateClientId(),
-      active: true,
-      order: nextOrder,
-      explanationTemplate: "",
-      conditions: buildConditionMap(vocabularyKeys, {}),
-    };
+    const nextScenario = createLegacyScenarioDraft(generateClientId(), nextOrder, vocabularyKeys);
     setScenarios((prev) => [...prev, nextScenario]);
     setEditingScenarioIndex(scenarios.length);
     setScenarioDialogMode("add");
@@ -487,11 +557,8 @@ export function ProductForm({
         const source = set.scenario ?? set.scenarios?.[0];
         if (!source) return;
         additions.push({
-          id: generateClientId(),
-          active: source.active,
+          ...toScenarioDraft(source, vocabularyKeys, generateClientId()),
           order: nextOrder,
-          explanationTemplate: source.explanationTemplate ?? "",
-          conditions: buildConditionMap(vocabularyKeys, source.conditions),
         });
         nextOrder += 1;
       });
@@ -499,6 +566,23 @@ export function ProductForm({
     });
     setIsRuleSetDialogOpen(false);
     setRuleSetSelection([]);
+  };
+
+  const handleImportQuestionnaireScenario = () => {
+    if (!selectedQuestionnaire) return;
+    if (!selectedQuestionnaireAnalysis || selectedQuestionnaireAnalysis.eligibleQuestions.length === 0) return;
+    const nextOrder = scenarios.length ? Math.max(...scenarios.map((scenario) => scenario.order)) + 1 : 0;
+    const nextScenario = createQuestionnaireScenarioDraft({
+      id: generateClientId(),
+      order: nextOrder,
+      questionnaireId: selectedQuestionnaire.id,
+      questionnaireTitleSnapshot: selectedQuestionnaire.title,
+    });
+    setScenarios((prev) => [...prev, nextScenario]);
+    setEditingScenarioIndex(scenarios.length);
+    setScenarioDialogMode("add");
+    setIsQuestionnaireDialogOpen(false);
+    setIsScenarioDialogOpen(true);
   };
 
   const openScenarioDialog = (index: number) => {
@@ -600,40 +684,86 @@ export function ProductForm({
               <div className="text-muted-foreground text-sm">Nu există reguli încă.</div>
             ) : (
               <div className="space-y-3">
-                {scenarios.map((scenario, index) => (
-                  <div key={scenario.id} className="rounded-md border p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="font-medium">Regulă {index + 1}</div>
-                        <div className="text-muted-foreground text-xs">
-                          {formatScenarioSummary(scenario, sortedVocabularyCategories)}
+                {scenarios.map((scenario, index) => {
+                  const questionnaireId = scenario.questionnaireBinding?.questionnaireId ?? "";
+                  const hasQuestionnaireData = questionnaireId ? questionnaireId in questionnaireQuestionsById : false;
+                  const questionnaireQuestions = questionnaireId
+                    ? (questionnaireQuestionsById[questionnaireId] ?? [])
+                    : [];
+                  const questionnaireWarnings =
+                    questionnaireId && hasQuestionnaireData
+                      ? analyzeQuestionnaireScenario(scenario, questionnaireQuestions).warnings
+                      : [];
+                  const questionnaireLoadError = questionnaireId
+                    ? (questionnaireQuestionsError[questionnaireId] ?? null)
+                    : null;
+                  const isQuestionnaireChecking = questionnaireId
+                    ? Boolean(questionnaireQuestionsLoading[questionnaireId])
+                    : false;
+
+                  return (
+                    <div key={scenario.id} className="rounded-md border p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="space-y-2">
+                          <div className="font-medium">Regulă {index + 1}</div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            {scenario.questionnaireBinding?.questionnaireId ? (
+                              <Badge variant="secondary">
+                                Chestionar: {scenario.questionnaireBinding.questionnaireTitleSnapshot || "Necunoscut"}
+                              </Badge>
+                            ) : (
+                              <Badge variant="outline">Legacy</Badge>
+                            )}
+                          </div>
+                          <div className="text-muted-foreground text-xs">
+                            {formatScenarioSummary(scenario, sortedVocabularyCategories)}
+                          </div>
+                          <div className="text-muted-foreground text-xs">
+                            {scenario.active ? "Activ" : "Inactiv"} • order: {scenario.order}
+                          </div>
+                          {isQuestionnaireChecking ? (
+                            <div className="text-muted-foreground text-xs">
+                              Se verifică întrebările chestionarului...
+                            </div>
+                          ) : null}
+                          {questionnaireLoadError ? (
+                            <div className="text-destructive text-xs">{questionnaireLoadError}</div>
+                          ) : null}
+                          {questionnaireWarnings.map((warning) => (
+                            <div
+                              key={`${scenario.id}-${warning.type}-${warning.key}`}
+                              className="text-amber-700 text-xs"
+                            >
+                              {warning.message}
+                            </div>
+                          ))}
                         </div>
-                        <div className="text-muted-foreground text-xs">
-                          {scenario.active ? "Activ" : "Inactiv"} • order: {scenario.order}
+                        <div className="flex items-center gap-2">
+                          <Button type="button" variant="outline" size="sm" onClick={() => openScenarioDialog(index)}>
+                            Editează
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleDeleteScenario(scenario, index)}
+                          >
+                            Șterge
+                          </Button>
                         </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Button type="button" variant="outline" size="sm" onClick={() => openScenarioDialog(index)}>
-                          Editează
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleDeleteScenario(scenario, index)}
-                        >
-                          Șterge
-                        </Button>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setIsRuleSetDialogOpen(true)}>
                 Importă reguli
+              </Button>
+              <Button type="button" variant="outline" onClick={() => setIsQuestionnaireDialogOpen(true)}>
+                Importă din chestionar
               </Button>
               <Button
                 type="button"
@@ -656,46 +786,120 @@ export function ProductForm({
           }}
         >
           <DialogContent className="sm:max-w-3xl">
-            <DialogTitle>Editează regulă</DialogTitle>
-            {editingScenarioIndex !== null ? (
+            <DialogHeader>
+              <DialogTitle>{scenarioDialogMode === "edit" ? "Editează regulă" : "Adaugă regulă"}</DialogTitle>
+              <DialogDescription>
+                {editingScenario?.questionnaireBinding?.questionnaireId
+                  ? "Alege răspunsurile bune direct din întrebările chestionarului selectat."
+                  : "Configurează condițiile clasice pe Vocabulary."}
+              </DialogDescription>
+            </DialogHeader>
+            {editingScenarioIndex !== null && editingScenario ? (
               <div className="space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="text-muted-foreground text-sm">Regulă {editingScenarioIndex + 1}</div>
                   <Switch
-                    checked={scenarios[editingScenarioIndex]?.active ?? false}
+                    checked={editingScenario.active}
                     onCheckedChange={(checked) => updateScenario(editingScenarioIndex, { active: checked })}
                   />
                 </div>
 
-                {vocabularyError ? <div className="text-destructive text-sm">{vocabularyError}</div> : null}
-                {sortedVocabularyCategories.length === 0 ? (
-                  <div className="text-muted-foreground text-sm">Nu există categorii în Vocabulary.</div>
-                ) : (
-                  <div className="grid gap-4 md:grid-cols-2">
-                    {sortedVocabularyCategories.map((category) => {
-                      const label = category.active ? category.title : `${category.title} (inactiv)`;
-                      const tip =
-                        category.description?.trim() ||
-                        `Alege valorile care fac produsul potrivit pentru ${category.title.toLowerCase()}.`;
-                      return (
-                        <div key={category.key} className="space-y-2">
+                {editingScenario.questionnaireBinding?.questionnaireId ? (
+                  <div className="space-y-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="secondary">
+                        Chestionar: {editingScenario.questionnaireBinding.questionnaireTitleSnapshot || "Necunoscut"}
+                      </Badge>
+                    </div>
+                    {isEditingQuestionnaireLoading ? (
+                      <div className="text-muted-foreground text-sm">Se încarcă întrebările chestionarului...</div>
+                    ) : null}
+                    {editingQuestionnaireError ? (
+                      <div className="text-destructive text-sm">{editingQuestionnaireError}</div>
+                    ) : null}
+                    {editingQuestionnaireAnalysis?.warnings.length ? (
+                      <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3">
+                        {editingQuestionnaireAnalysis.warnings.map((warning) => (
+                          <div key={`${warning.type}-${warning.key}`} className="text-amber-700 text-sm">
+                            {warning.message}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {!isEditingQuestionnaireLoading &&
+                    !editingQuestionnaireError &&
+                    editingQuestionnaireAnalysis?.eligibleQuestions.length === 0 ? (
+                      <div className="text-muted-foreground text-sm">
+                        Nu există întrebări active eligibile (`single_select` sau `multi_select`) pentru acest
+                        chestionar.
+                      </div>
+                    ) : null}
+                    <div className="space-y-4">
+                      {editingQuestionnaireAnalysis?.eligibleQuestions.map((question) => (
+                        <div key={question.id} className="space-y-2 rounded-md border p-3">
                           <FormLabel className="flex items-center gap-2">
-                            <InfoTip text={tip} />
-                            {label}
+                            <InfoTip
+                              text={
+                                question.helpText?.trim() ||
+                                "Selectează opțiunile care fac produsul potrivit pentru această întrebare."
+                              }
+                            />
+                            {question.label}
                           </FormLabel>
-                          <VocabularyMultiSelect
-                            vocabKey={category.key}
-                            value={scenarios[editingScenarioIndex]?.conditions[category.key] ?? []}
+                          <div className="text-muted-foreground text-xs">Key: {question.key}</div>
+                          <OptionMultiSelect
+                            items={(question.options ?? [])
+                              .filter((option) => option.active)
+                              .map((option) => ({ value: option.value, label: option.label }))}
+                            value={editingQuestionnaireAnalysis.selectionsByQuestionId[question.id] ?? []}
                             onChange={(value) =>
-                              updateScenario(editingScenarioIndex, {
-                                conditions: { ...scenarios[editingScenarioIndex].conditions, [category.key]: value },
-                              })
+                              setScenarios((prev) =>
+                                prev.map((item, idx) =>
+                                  idx === editingScenarioIndex
+                                    ? updateScenarioQuestionSelection(item, question, value)
+                                    : item,
+                                ),
+                              )
                             }
+                            emptyMessage="Întrebarea nu are opțiuni active."
                           />
                         </div>
-                      );
-                    })}
+                      ))}
+                    </div>
                   </div>
+                ) : (
+                  <>
+                    {vocabularyError ? <div className="text-destructive text-sm">{vocabularyError}</div> : null}
+                    {sortedVocabularyCategories.length === 0 ? (
+                      <div className="text-muted-foreground text-sm">Nu există categorii în Vocabulary.</div>
+                    ) : (
+                      <div className="grid gap-4 md:grid-cols-2">
+                        {sortedVocabularyCategories.map((category) => {
+                          const label = category.active ? category.title : `${category.title} (inactiv)`;
+                          const tip =
+                            category.description?.trim() ||
+                            `Alege valorile care fac produsul potrivit pentru ${category.title.toLowerCase()}.`;
+                          return (
+                            <div key={category.key} className="space-y-2">
+                              <FormLabel className="flex items-center gap-2">
+                                <InfoTip text={tip} />
+                                {label}
+                              </FormLabel>
+                              <VocabularyMultiSelect
+                                vocabKey={category.key}
+                                value={editingScenario.conditions[category.key] ?? []}
+                                onChange={(value) =>
+                                  updateScenario(editingScenarioIndex, {
+                                    conditions: { ...editingScenario.conditions, [category.key]: value },
+                                  })
+                                }
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
                 )}
 
                 <div className="grid gap-4 md:grid-cols-3">
@@ -706,7 +910,7 @@ export function ProductForm({
                     </FormLabel>
                     <Input
                       type="number"
-                      value={scenarios[editingScenarioIndex]?.order ?? 0}
+                      value={editingScenario.order}
                       onChange={(e) => updateScenario(editingScenarioIndex, { order: Number(e.target.value || 0) })}
                     />
                   </div>
@@ -719,20 +923,14 @@ export function ProductForm({
                   </FormLabel>
                   <Textarea
                     rows={3}
-                    value={scenarios[editingScenarioIndex]?.explanationTemplate ?? ""}
+                    value={editingScenario.explanationTemplate}
                     onChange={(e) => updateScenario(editingScenarioIndex, { explanationTemplate: e.target.value })}
                   />
                 </div>
                 <div className="flex items-center justify-end">
-                  {scenarioDialogMode === "edit" ? (
-                    <Button type="button" onClick={() => setIsScenarioDialogOpen(false)}>
-                      Editează regulă
-                    </Button>
-                  ) : (
-                    <Button type="button" onClick={() => setIsScenarioDialogOpen(false)}>
-                      Gata
-                    </Button>
-                  )}
+                  <Button type="button" onClick={() => setIsScenarioDialogOpen(false)}>
+                    {scenarioDialogMode === "edit" ? "Închide" : "Gata"}
+                  </Button>
                 </div>
               </div>
             ) : null}
@@ -797,6 +995,106 @@ export function ProductForm({
                 </Button>
                 <Button type="button" onClick={handleImportRuleSets} disabled={ruleSetSelection.length === 0}>
                   Importă reguli
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={isQuestionnaireDialogOpen}
+          onOpenChange={(open) => {
+            setIsQuestionnaireDialogOpen(open);
+            if (!open) setQuestionnaireError(null);
+          }}
+        >
+          <DialogContent className="sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Importă din chestionar</DialogTitle>
+              <DialogDescription>
+                Alege chestionarul din care vrei să preiei întrebările și opțiunile pentru scenariul de recomandare.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              {questionnaireError ? <div className="text-destructive text-sm">{questionnaireError}</div> : null}
+              {isQuestionnaireLoading ? (
+                <div className="text-muted-foreground text-sm">Se încarcă chestionarele...</div>
+              ) : questionnaires.length === 0 ? (
+                <div className="text-muted-foreground text-sm">Nu există chestionare disponibile.</div>
+              ) : (
+                <>
+                  <div className="space-y-2">
+                    <FormLabel>Chestionar</FormLabel>
+                    <Select value={selectedQuestionnaireId} onValueChange={setSelectedQuestionnaireId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Alege chestionarul" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {questionnaires.map((questionnaire) => (
+                          <SelectItem key={questionnaire.id} value={questionnaire.id}>
+                            {questionnaire.title}
+                            {questionnaire.active ? "" : " (inactiv)"}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {selectedQuestionnaire ? (
+                    <div className="space-y-3 rounded-md border p-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="secondary">{selectedQuestionnaire.title}</Badge>
+                        {!selectedQuestionnaire.active ? <Badge variant="outline">Inactiv</Badge> : null}
+                      </div>
+                      {selectedQuestionnaireId && questionnaireQuestionsLoading[selectedQuestionnaireId] ? (
+                        <div className="text-muted-foreground text-sm">Se încarcă întrebările...</div>
+                      ) : null}
+                      {selectedQuestionnaireId && questionnaireQuestionsError[selectedQuestionnaireId] ? (
+                        <div className="text-destructive text-sm">
+                          {questionnaireQuestionsError[selectedQuestionnaireId]}
+                        </div>
+                      ) : null}
+                      {selectedQuestionnaireAnalysis ? (
+                        <>
+                          <div className="text-muted-foreground text-sm">
+                            {selectedQuestionnaireAnalysis.eligibleQuestions.length} întrebări eligibile pentru editor.
+                          </div>
+                          {selectedQuestionnaireAnalysis.warnings.map((warning) => (
+                            <div key={`${warning.type}-${warning.key}`} className="text-amber-700 text-sm">
+                              {warning.message}
+                            </div>
+                          ))}
+                          {selectedQuestionnaireAnalysis.eligibleQuestions.length > 0 ? (
+                            <div className="flex flex-wrap gap-2">
+                              {selectedQuestionnaireAnalysis.eligibleQuestions.map((question) => (
+                                <Badge key={question.id} variant="outline">
+                                  {question.label}
+                                </Badge>
+                              ))}
+                            </div>
+                          ) : null}
+                        </>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </>
+              )}
+
+              <div className="flex items-center justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setIsQuestionnaireDialogOpen(false)}>
+                  Anulează
+                </Button>
+                <Button
+                  type="button"
+                  onClick={handleImportQuestionnaireScenario}
+                  disabled={
+                    !selectedQuestionnaire ||
+                    Boolean(selectedQuestionnaireId && questionnaireQuestionsLoading[selectedQuestionnaireId]) ||
+                    Boolean(selectedQuestionnaireId && questionnaireQuestionsError[selectedQuestionnaireId]) ||
+                    (selectedQuestionnaireAnalysis?.eligibleQuestions.length ?? 0) === 0
+                  }
+                >
+                  Importă și editează
                 </Button>
               </div>
             </div>

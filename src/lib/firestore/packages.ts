@@ -194,6 +194,14 @@ async function validateAndEnrichPayload(input: PackagePayloadInput) {
       active: Boolean(scenario.active),
       order: Number(scenario.order ?? 0),
       explanationTemplate: String(scenario.explanationTemplate ?? "").trim(),
+      ...(scenario.questionnaireBinding?.questionnaireId
+        ? {
+            questionnaireBinding: {
+              questionnaireId: String(scenario.questionnaireBinding.questionnaireId).trim(),
+              questionnaireTitleSnapshot: String(scenario.questionnaireBinding.questionnaireTitleSnapshot ?? "").trim(),
+            },
+          }
+        : {}),
       conditions: scenario.conditions ?? {},
     })) satisfies ProductRecommendationScenario[],
     totalPrice,

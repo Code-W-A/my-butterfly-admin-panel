@@ -30,6 +30,10 @@ export type QuestionnaireQuestion = {
 export type ProductRecommendationScenario = {
   active: boolean;
   order: number;
+  questionnaireBinding?: {
+    questionnaireId: string;
+    questionnaireTitleSnapshot: string;
+  };
   conditions: {
     budgetMin?: number;
     budgetMax?: number;
