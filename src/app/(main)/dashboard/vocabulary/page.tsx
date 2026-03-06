@@ -37,15 +37,11 @@ import {
   listVocabularyOptions,
   normalizeVocabularyValue,
   seedDefaultVocabulary,
+  seedSuggestedVocabularyForEmptyCategories,
   updateVocabularyKey,
   updateVocabularyOption,
   type VocabularyCategory,
 } from "@/lib/firestore/vocabulary";
-
-const isDebugSeedEnabled =
-  process.env.NEXT_PUBLIC_DEBUG === "1" ||
-  process.env.NEXT_PUBLIC_DEBUG === "true" ||
-  process.env.NEXT_PUBLIC_DEBUG === "on";
 
 const categorySchema = z.object({
   title: z.string().min(1),
@@ -238,10 +234,6 @@ export default function VocabularyPage() {
   }, [load]);
 
   const isReady = isInitialized === true;
-  const hasVocabularyValues = useMemo(
-    () => Object.values(optionsByKey).some((options) => (options ?? []).length > 0),
-    [optionsByKey],
-  );
 
   const sortedOptionsByKey = useMemo(() => {
     const result: Record<string, VocabularyOption[]> = {};
@@ -268,6 +260,10 @@ export default function VocabularyPage() {
   );
 
   const sortedCategories = useMemo(() => categories.slice().sort((a, b) => a.order - b.order), [categories]);
+  const categoriesWithoutValues = useMemo(
+    () => sortedCategories.filter((category) => (optionsByKey[category.key] ?? []).length === 0),
+    [optionsByKey, sortedCategories],
+  );
 
   const openCategoryDialog = (category?: WithId<VocabularyCategory>) => {
     if (category) {
@@ -319,7 +315,7 @@ export default function VocabularyPage() {
           <Button type="button" variant="outline" onClick={() => load()} disabled={isBusy || isInitialized === null}>
             Reîmprospătează
           </Button>
-          {isDebugSeedEnabled && isInitialized === true && !hasVocabularyValues ? (
+          {isInitialized === true ? (
             <Button
               type="button"
               variant="outline"
@@ -339,7 +335,30 @@ export default function VocabularyPage() {
               }}
               disabled={isBusy}
             >
-              Adaugă valori inițiale
+              Completează valori lipsă
+            </Button>
+          ) : null}
+          {isInitialized === true ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={async () => {
+                try {
+                  setError(null);
+                  setIsBusy(true);
+                  await seedSuggestedVocabularyForEmptyCategories();
+                  await load();
+                } catch (err) {
+                  logFirebaseError("Vocabulary: seedSuggested", err);
+                  const info = getFirebaseErrorInfo(err);
+                  setError(info.message || "Popularea automată a eșuat.");
+                } finally {
+                  setIsBusy(false);
+                }
+              }}
+              disabled={isBusy}
+            >
+              Populează categoriile goale
             </Button>
           ) : null}
           <PageHelpDialog helpKey="vocabulary" />
@@ -352,9 +371,7 @@ export default function VocabularyPage() {
                   setError(null);
                   setIsBusy(true);
                   await ensureVocabularyInitialized();
-                  if (isDebugSeedEnabled) {
-                    await seedDefaultVocabulary();
-                  }
+                  await seedDefaultVocabulary();
                   await load();
                 } catch (err) {
                   logFirebaseError("Vocabulary: init", err);
@@ -402,6 +419,18 @@ export default function VocabularyPage() {
 
       {isReady ? (
         <div className="space-y-4">
+          {categoriesWithoutValues.length > 0 ? (
+            <div className="rounded-md border bg-muted p-3 text-sm">
+              <div className="font-medium">Categorii fără valori active</div>
+              <div className="text-muted-foreground">
+                {categoriesWithoutValues.map((category) => category.title).join(", ")}.
+              </div>
+              <div className="text-muted-foreground text-xs">
+                Dacă le-ai șters din Firestore, poți folosi butonul „Completează valori lipsă”. Pentru categorii custom,
+                adaugă manual valorile din fiecare card.
+              </div>
+            </div>
+          ) : null}
           <div className="flex items-center justify-between">
             <div>
               <h2 className="font-semibold text-lg">Categorii</h2>

@@ -192,6 +192,7 @@ export function QuestionEditor({
   const keyValue = form.watch("key");
   const rulesValue = form.watch("visibilityRules") ?? [];
   const [vocabularyCategories, setVocabularyCategories] = useState<WithId<VocabularyCategory>[]>([]);
+  const [vocabularyOptionCounts, setVocabularyOptionCounts] = useState<Record<string, number>>({});
   const vocabularyKeyValues = useMemo(() => vocabularyCategories.map((item) => item.key), [vocabularyCategories]);
   const vocabularyKeyOptions = useMemo<VocabularyKeyOption[]>(() => {
     const base: VocabularyKeyOption[] = [
@@ -200,7 +201,9 @@ export function QuestionEditor({
         .sort((a, b) => a.order - b.order)
         .map((item) => ({
           value: item.key,
-          label: item.active ? item.title : `${item.title} (inactiv)`,
+          label:
+            (item.active ? item.title : `${item.title} (inactiv)`) +
+            ((vocabularyOptionCounts[item.key] ?? 0) === 0 ? " (fara raspunsuri)" : ""),
         })),
       ...(vocabularyKeyValues.includes("preferences") ? [] : [{ value: "preferences", label: "Preferințe" }]),
       ...(vocabularyKeyValues.includes("budget") ? [] : [{ value: "budget", label: "Buget" }]),
@@ -210,8 +213,12 @@ export function QuestionEditor({
       base.unshift({ value: currentKey, label: `${currentKey} (legacy)` });
     }
     return base;
-  }, [vocabularyCategories, vocabularyKeyValues, keyValue]);
+  }, [vocabularyCategories, vocabularyKeyValues, keyValue, vocabularyOptionCounts]);
   const isVocabularyKey = vocabularyKeyValues.includes(String(keyValue));
+  const vocabularyKeysWithoutAnswers = useMemo(
+    () => vocabularyCategories.filter((category) => (vocabularyOptionCounts[category.key] ?? 0) === 0),
+    [vocabularyCategories, vocabularyOptionCounts],
+  );
 
   const keyHelpText = useMemo(() => {
     const key = String(keyValue || "");
@@ -267,6 +274,31 @@ export function QuestionEditor({
         setVocabularyCategories([]);
       });
   }, []);
+
+  useEffect(() => {
+    if (!vocabularyCategories.length) {
+      setVocabularyOptionCounts({});
+      return;
+    }
+    let cancelled = false;
+    Promise.all(
+      vocabularyCategories.map(async (category) => {
+        try {
+          const options = await listVocabularyOptions(category.key, { includeInactive: false });
+          return [category.key, options.length] as const;
+        } catch (err) {
+          logFirebaseError("QuestionEditor: loadVocabularyOptionsCount", err);
+          return [category.key, 0] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (cancelled) return;
+      setVocabularyOptionCounts(Object.fromEntries(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [vocabularyCategories]);
 
   useEffect(() => {
     if (selected) {
@@ -538,6 +570,12 @@ export function QuestionEditor({
                       ))}
                     </SelectContent>
                   </Select>
+                  {vocabularyKeysWithoutAnswers.length > 0 ? (
+                    <div className="text-muted-foreground text-xs">
+                      Fără răspunsuri active în Vocabulary:{" "}
+                      {vocabularyKeysWithoutAnswers.map((item) => item.title).join(", ")}.
+                    </div>
+                  ) : null}
                   <FormMessage />
                 </FormItem>
               )}

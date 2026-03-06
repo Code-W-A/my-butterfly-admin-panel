@@ -96,6 +96,79 @@ const defaultVocabularyOptions: Record<VocabularyKey, QuestionnaireQuestionOptio
   ],
 };
 
+const suggestedOptionsByKeyword: Array<{
+  keywords: string[];
+  options: QuestionnaireQuestionOption[];
+}> = [
+  {
+    keywords: ["tip jucator", "tipul jucatorului", "player type", "stil joc"],
+    options: [
+      { value: "offensive", label: "Ofensiv", order: 0, active: true },
+      { value: "all_round", label: "All-round", order: 1, active: true },
+      { value: "defensive", label: "Defensiv", order: 2, active: true },
+    ],
+  },
+  {
+    keywords: ["frecventa", "cat de des", "des joci"],
+    options: [
+      { value: "rare", label: "Foarte rar", order: 0, active: true },
+      { value: "monthly", label: "1-3 ori pe luna", order: 1, active: true },
+      { value: "weekly", label: "Saptamanal", order: 2, active: true },
+      { value: "daily", label: "Aproape zilnic", order: 3, active: true },
+    ],
+  },
+  {
+    keywords: ["varsta", "categorie amator", "amator", "nivel amator"],
+    options: [
+      { value: "beginner", label: "Incepator", order: 0, active: true },
+      { value: "intermediate", label: "Intermediar", order: 1, active: true },
+      { value: "advanced", label: "Avansat", order: 2, active: true },
+    ],
+  },
+  {
+    keywords: ["tipul paletei", "paleta", "racheta"],
+    options: [
+      { value: "allround", label: "All-round", order: 0, active: true },
+      { value: "offensive", label: "Ofensiva", order: 1, active: true },
+      { value: "defensive", label: "Defensiva", order: 2, active: true },
+    ],
+  },
+  {
+    keywords: ["compozitia lemnului", "lemn", "carbon", "blade composition"],
+    options: [
+      { value: "all_wood", label: "Lemn", order: 0, active: true },
+      { value: "inner_carbon", label: "Inner carbon", order: 1, active: true },
+      { value: "outer_carbon", label: "Outer carbon", order: 2, active: true },
+    ],
+  },
+  {
+    keywords: ["ce cauti", "ce imbunatatesti", "prioritate", "focus"],
+    options: [
+      { value: "control", label: "Control", order: 0, active: true },
+      { value: "spin", label: "Spin", order: 1, active: true },
+      { value: "speed", label: "Viteza", order: 2, active: true },
+      { value: "consistency", label: "Constanta", order: 3, active: true },
+    ],
+  },
+  {
+    keywords: ["partea puternica", "mana", "dominant"],
+    options: [
+      { value: "forehand", label: "Forehand", order: 0, active: true },
+      { value: "backhand", label: "Backhand", order: 1, active: true },
+      { value: "balanced", label: "Echilibrat", order: 2, active: true },
+    ],
+  },
+  {
+    keywords: ["lovitura preferata", "lovitura", "stroke"],
+    options: [
+      { value: "topspin", label: "Topspin", order: 0, active: true },
+      { value: "drive", label: "Drive", order: 1, active: true },
+      { value: "block", label: "Block", order: 2, active: true },
+      { value: "smash", label: "Smash", order: 3, active: true },
+    ],
+  },
+];
+
 const sanitizeValue = (value: string) =>
   value
     .trim()
@@ -104,6 +177,12 @@ const sanitizeValue = (value: string) =>
     .replace(/[^a-z0-9_]+/g, "_")
     .replace(/_{2,}/g, "_")
     .replace(/^_+|_+$/g, "");
+
+const normalizeForMatch = (value: string) =>
+  value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
 
 const vocabularyKeysCollection = (db: NonNullable<ReturnType<typeof initFirebase>["db"]>) =>
   collection(db, VOCABULARY_KEYS_COLLECTION);
@@ -332,13 +411,83 @@ export async function seedDefaultVocabulary() {
   return { createdCategories, addedOptions };
 }
 
+function getSuggestedOptionsForCategory(category: WithId<VocabularyCategory>): QuestionnaireQuestionOption[] {
+  const byKey = defaultVocabularyOptions[category.key];
+  if (byKey?.length) {
+    return byKey.map((option) => ({ ...option }));
+  }
+
+  const haystack = normalizeForMatch(`${category.key} ${category.title} ${category.description ?? ""}`);
+  const matched = suggestedOptionsByKeyword.find((entry) =>
+    entry.keywords.some((keyword) => haystack.includes(normalizeForMatch(keyword))),
+  );
+  if (matched?.options?.length) {
+    return matched.options.map((option) => ({ ...option }));
+  }
+
+  // Safe fallback for unknown custom categories.
+  return [
+    { value: "optiune_1", label: "Optiunea 1", order: 0, active: true },
+    { value: "optiune_2", label: "Optiunea 2", order: 1, active: true },
+    { value: "optiune_3", label: "Optiunea 3", order: 2, active: true },
+  ];
+}
+
+export async function seedSuggestedVocabularyForEmptyCategories() {
+  const categories = await listVocabularyKeys({ includeInactive: true });
+  let patchedCategories = 0;
+  let addedOptions = 0;
+
+  for (const category of categories) {
+    const { ref, data } = await getVocabularyQuestionDoc(category.key);
+    const current = data.options ?? [];
+    if (current.length > 0) continue;
+
+    const suggested = getSuggestedOptionsForCategory(category);
+    if (!suggested.length) continue;
+
+    await updateDoc(ref, {
+      options: suggested,
+      updatedAt: serverTimestamp(),
+    });
+    patchedCategories += 1;
+    addedOptions += suggested.length;
+  }
+
+  await touchMetaConfig();
+  return { patchedCategories, addedOptions };
+}
+
 async function getVocabularyQuestionDoc(key: string) {
   const { db } = initFirebase();
   if (!db) throw new Error("Firestore not initialized.");
   const ref = doc(db, "questionnaires", VOCABULARY_QUESTIONNAIRE_ID, "questions", key);
-  const snap = await getDoc(ref);
+  let snap = await getDoc(ref);
   if (!snap.exists()) {
-    throw new Error("Vocabulary not initialized.");
+    // Back-compat/self-heal: some installs have vocabulary_keys docs but missing question docs.
+    const categorySnap = await getDoc(doc(db, VOCABULARY_KEYS_COLLECTION, key));
+    if (!categorySnap.exists()) {
+      throw new Error("Vocabulary not initialized.");
+    }
+    const category = categorySnap.data() as Partial<VocabularyCategory>;
+    const payload: Omit<QuestionnaireQuestion, "createdAt" | "updatedAt"> = {
+      active: true,
+      order: category.order ?? 0,
+      type: "multi_select",
+      key,
+      label: (category.title ?? key).toString(),
+      options: [],
+      validation: { required: false },
+    };
+    await setDoc(ref, {
+      ...payload,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    snap = await getDoc(ref);
+    if (!snap.exists()) {
+      throw new Error("Vocabulary not initialized.");
+    }
   }
   return { ref, data: snap.data() as QuestionnaireQuestion };
 }
