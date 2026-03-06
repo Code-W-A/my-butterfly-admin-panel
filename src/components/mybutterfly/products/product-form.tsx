@@ -232,6 +232,7 @@ export function ProductForm({
     typeof basePriceEur === "number" && Number.isFinite(basePriceEur) ? basePriceEur : null,
   );
   const skipNextCurrencyTransitionRef = useRef(false);
+  const initializedScenarioSourceRef = useRef<Product | undefined>(undefined);
 
   useEffect(() => {
     pendingFilesRef.current = pendingFiles;
@@ -247,9 +248,12 @@ export function ProductForm({
 
   useEffect(() => {
     if (!initialValues) {
+      initializedScenarioSourceRef.current = undefined;
       setScenarios([]);
       return;
     }
+    if (initializedScenarioSourceRef.current === initialValues) return;
+    initializedScenarioSourceRef.current = initialValues;
     setScenarios(
       (initialValues.recommendationScenarios ?? []).map((scenario) =>
         toScenarioDraft(scenario, vocabularyKeys, generateClientId()),

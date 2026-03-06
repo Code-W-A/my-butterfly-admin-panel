@@ -45,7 +45,6 @@ import {
 
 const categorySchema = z.object({
   title: z.string().min(1),
-  key: z.string().optional(),
   description: z.string().optional(),
   standardQuestion: z.string().optional(),
   order: z.coerce.number().int().min(0).optional(),
@@ -191,19 +190,24 @@ export default function VocabularyPage() {
   const [editingCategory, setEditingCategory] = useState<WithId<VocabularyCategory> | null>(null);
   const [categoryDraft, setCategoryDraft] = useState<{
     title: string;
-    key: string;
     description: string;
     standardQuestion: string;
     order: string;
     active: boolean;
   }>({
     title: "",
-    key: "",
     description: "",
     standardQuestion: "",
     order: "",
     active: true,
   });
+  const generatedCategoryKey = normalizeVocabularyValue(categoryDraft.title);
+  const conflictingGeneratedCategory = useMemo(
+    () => (editingCategory ? null : (categories.find((category) => category.key === generatedCategoryKey) ?? null)),
+    [categories, editingCategory, generatedCategoryKey],
+  );
+  const hasGeneratedCategoryKey = Boolean(generatedCategoryKey);
+  const hasGeneratedCategoryConflict = Boolean(generatedCategoryKey && conflictingGeneratedCategory);
 
   const load = useCallback(async () => {
     const q = await getVocabularyQuestionnaire();
@@ -270,7 +274,6 @@ export default function VocabularyPage() {
       setEditingCategory(category);
       setCategoryDraft({
         title: category.title,
-        key: category.key,
         description: category.description ?? "",
         standardQuestion: category.standardQuestion ?? "",
         order: `${category.order ?? 0}`,
@@ -280,7 +283,6 @@ export default function VocabularyPage() {
       setEditingCategory(null);
       setCategoryDraft({
         title: "",
-        key: "",
         description: "",
         standardQuestion: "",
         order: `${sortedCategories.length}`,
@@ -715,20 +717,33 @@ export default function VocabularyPage() {
                 placeholder="ex: Nivel"
               />
             </div>
-            {!editingCategory ? (
-              <div className="space-y-2 md:col-span-2">
-                <Label className="flex items-center gap-2">
-                  <InfoTip text="Un identificator intern (folosit în reguli și chestionare). De obicei îl poți lăsa gol și se generează automat." />
-                  Cheie tehnică (opțional)
-                </Label>
-                <Input
-                  value={categoryDraft.key}
-                  onChange={(e) => setCategoryDraft((prev) => ({ ...prev, key: e.target.value }))}
-                  placeholder={normalizeVocabularyValue(categoryDraft.title || "nivel")}
+            <div className="space-y-2 md:col-span-2">
+              <Label className="flex items-center gap-2">
+                <InfoTip
+                  text={
+                    editingCategory
+                      ? "Cheia tehnică rămâne fixă după creare."
+                      : "Cheia se generează automat din titlu și trebuie să fie unică în Vocabulary."
+                  }
                 />
-                <div className="text-muted-foreground text-xs">Dacă e gol, se generează automat din titlu.</div>
+                {editingCategory ? "Cheie tehnică" : "Cheie generată"}
+              </Label>
+              <div className="rounded-md border bg-muted px-3 py-2 font-mono text-sm">
+                {editingCategory?.key || generatedCategoryKey || "Introduce un titlu valid"}
               </div>
-            ) : null}
+              {editingCategory ? (
+                <div className="text-muted-foreground text-xs">Cheia tehnică nu se poate schimba după creare.</div>
+              ) : hasGeneratedCategoryConflict ? (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-900 text-sm">
+                  Există deja categoria <span className="font-medium">„{conflictingGeneratedCategory?.title}”</span> cu
+                  cheia <span className="font-mono"> {generatedCategoryKey}</span>. Alege alt titlu.
+                </div>
+              ) : !hasGeneratedCategoryKey && categoryDraft.title.trim() ? (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-900 text-sm">
+                  Din titlul actual nu se poate genera o cheie validă. Folosește litere sau cifre.
+                </div>
+              ) : null}
+            </div>
             <div className="space-y-2 md:col-span-2">
               <Label className="flex items-center gap-2">
                 <InfoTip text="O descriere scurtă, ca să fie clar ce conține categoria (opțional)." />
@@ -780,14 +795,29 @@ export default function VocabularyPage() {
             </Button>
             <Button
               type="button"
-              disabled={isBusy || !categoryDraft.title.trim()}
+              disabled={
+                isBusy ||
+                !categoryDraft.title.trim() ||
+                (!editingCategory && (!hasGeneratedCategoryKey || hasGeneratedCategoryConflict))
+              }
               onClick={async () => {
                 try {
                   setError(null);
                   setIsBusy(true);
+                  if (!editingCategory) {
+                    if (!generatedCategoryKey) {
+                      setError("Titlul trebuie să conțină litere sau cifre ca să putem genera cheia categoriei.");
+                      return;
+                    }
+                    if (hasGeneratedCategoryConflict) {
+                      setError(
+                        `Există deja categoria „${conflictingGeneratedCategory?.title}” cu cheia „${generatedCategoryKey}”.`,
+                      );
+                      return;
+                    }
+                  }
                   const parsed = categorySchema.parse({
                     title: categoryDraft.title,
-                    key: categoryDraft.key.trim() || undefined,
                     description: categoryDraft.description.trim() || undefined,
                     standardQuestion: categoryDraft.standardQuestion.trim() || undefined,
                     order: categoryDraft.order.trim() ? Number(categoryDraft.order) : undefined,
@@ -803,7 +833,7 @@ export default function VocabularyPage() {
                     });
                   } else {
                     await createVocabularyKey({
-                      key: parsed.key ?? parsed.title,
+                      key: generatedCategoryKey,
                       title: parsed.title,
                       description: parsed.description,
                       standardQuestion: parsed.standardQuestion,

@@ -9,6 +9,57 @@ import type {
   WithId,
 } from "./types";
 
+type PackageDiagnosticsSummary = {
+  packageCounts: {
+    total: number;
+    matched: number;
+    invalidShape: number;
+    missingProducts: number;
+    mixedCurrency: number;
+    noActiveScenarios: number;
+    rejectedByScenarios: number;
+  };
+  scenarioOutcomeCounts: {
+    matched: number;
+    belowThreshold: number;
+    budgetBelowMin: number;
+    budgetAboveMax: number;
+    nanMatchPercent: number;
+  };
+  sampleRejectedPackages: Array<{
+    packageId: string;
+    title: string;
+    mode: RecommendationPackage["mode"];
+    reason:
+      | "invalid_shape"
+      | "missing_products"
+      | "mixed_currency"
+      | "no_active_scenarios"
+      | "below_threshold"
+      | "budget_below_min"
+      | "budget_above_max"
+      | "nan_match_percent";
+    activeScenarioCount: number;
+    bestMatchPercent?: number;
+    bestScenarioOrder?: number;
+    totalPrice?: number;
+    currencies?: string[];
+    missingProductIds?: string[];
+  }>;
+  sampleMatchedPackages: Array<{
+    packageId: string;
+    title: string;
+    matchPercent: number;
+    scenarioOrder: number;
+    totalPrice: number;
+  }>;
+};
+
+type PackageEvaluationResult = {
+  matches: PackageMatch[];
+  diagnostics: PackageDiagnosticsSummary;
+};
+
 const normalizePreferenceKey = (value: string) => {
   const normalized = value.trim().toLowerCase();
   if (!normalized) return null;
@@ -226,7 +277,44 @@ const sortMatches = (a: PackageMatch, b: PackageMatch) => {
   return a.package.title.localeCompare(b.package.title);
 };
 
-export function matchPackageScenarios(params: {
+const createPackageDiagnosticsSummary = (): PackageDiagnosticsSummary => ({
+  packageCounts: {
+    total: 0,
+    matched: 0,
+    invalidShape: 0,
+    missingProducts: 0,
+    mixedCurrency: 0,
+    noActiveScenarios: 0,
+    rejectedByScenarios: 0,
+  },
+  scenarioOutcomeCounts: {
+    matched: 0,
+    belowThreshold: 0,
+    budgetBelowMin: 0,
+    budgetAboveMax: 0,
+    nanMatchPercent: 0,
+  },
+  sampleRejectedPackages: [],
+  sampleMatchedPackages: [],
+});
+
+const pushRejectedPackageSample = (
+  diagnostics: PackageDiagnosticsSummary,
+  sample: PackageDiagnosticsSummary["sampleRejectedPackages"][number],
+) => {
+  if (diagnostics.sampleRejectedPackages.length >= 8) return;
+  diagnostics.sampleRejectedPackages.push(sample);
+};
+
+const pushMatchedPackageSample = (
+  diagnostics: PackageDiagnosticsSummary,
+  sample: PackageDiagnosticsSummary["sampleMatchedPackages"][number],
+) => {
+  if (diagnostics.sampleMatchedPackages.length >= 8) return;
+  diagnostics.sampleMatchedPackages.push(sample);
+};
+
+export function evaluatePackageScenarios(params: {
   packages: WithId<RecommendationPackage>[];
   productsById: Map<string, WithId<Product>>;
   input: RecommendationInput;
@@ -234,28 +322,108 @@ export function matchPackageScenarios(params: {
   askedKeys?: string[];
   questionnaireKeys?: string[];
   debug?: boolean;
-}): PackageMatch[] {
+}): PackageEvaluationResult {
   const threshold = Number.isFinite(params.minMatchPercent) ? (params.minMatchPercent as number) : 65;
   const preferenceKeys = getPreferenceKeys(params.input.preferences);
   const askedKeySet = params.askedKeys?.length ? new Set(params.askedKeys) : undefined;
   const questionnaireKeySet = params.questionnaireKeys?.length ? new Set(params.questionnaireKeys) : undefined;
 
+  const diagnostics = createPackageDiagnosticsSummary();
   const matches: PackageMatch[] = [];
-  params.packages.forEach((pkg) => {
-    if (!pkg.active) return;
-    const packageProducts = getPackageProducts(pkg, params.productsById);
-    if (!packageProducts.length) return;
 
-    const packageCurrencies = new Set(packageProducts.map((product) => product.currency));
-    if (packageCurrencies.size !== 1) return;
+  params.packages.forEach((pkg) => {
+    diagnostics.packageCounts.total += 1;
+
+    if (!pkg.active) return;
+
+    const items = pkg.items ?? [];
+    const activeScenarios = (pkg.recommendationScenarios ?? []).filter((scenario) => scenario.active);
+    const activeScenarioCount = activeScenarios.length;
+
+    if (!isPackageShapeEligible(pkg)) {
+      diagnostics.packageCounts.invalidShape += 1;
+      pushRejectedPackageSample(diagnostics, {
+        packageId: pkg.id,
+        title: pkg.title,
+        mode: pkg.mode,
+        reason: "invalid_shape",
+        activeScenarioCount,
+      });
+      return;
+    }
+
+    const missingProductIds = items
+      .map((item) => item.productId)
+      .filter((productId) => !params.productsById.has(productId));
+    if (missingProductIds.length > 0) {
+      diagnostics.packageCounts.missingProducts += 1;
+      pushRejectedPackageSample(diagnostics, {
+        packageId: pkg.id,
+        title: pkg.title,
+        mode: pkg.mode,
+        reason: "missing_products",
+        activeScenarioCount,
+        missingProductIds,
+      });
+      return;
+    }
+
+    const packageProducts = getPackageProducts(pkg, params.productsById);
+    if (!packageProducts.length) {
+      diagnostics.packageCounts.missingProducts += 1;
+      pushRejectedPackageSample(diagnostics, {
+        packageId: pkg.id,
+        title: pkg.title,
+        mode: pkg.mode,
+        reason: "missing_products",
+        activeScenarioCount,
+      });
+      return;
+    }
+
+    const packageCurrencies = [...new Set(packageProducts.map((product) => product.currency))];
+    if (packageCurrencies.length !== 1) {
+      diagnostics.packageCounts.mixedCurrency += 1;
+      pushRejectedPackageSample(diagnostics, {
+        packageId: pkg.id,
+        title: pkg.title,
+        mode: pkg.mode,
+        reason: "mixed_currency",
+        activeScenarioCount,
+        currencies: packageCurrencies,
+      });
+      return;
+    }
 
     const computedTotalPrice = Number(
       packageProducts.reduce((sum, product) => sum + Number(product.price ?? 0), 0).toFixed(2),
     );
     const totalPrice = Number.isFinite(pkg.totalPrice) ? Number(pkg.totalPrice) : computedTotalPrice;
-    const scenarios = (pkg.recommendationScenarios ?? []).filter((scenario) => scenario.active);
 
-    scenarios.forEach((scenario) => {
+    if (activeScenarios.length === 0) {
+      diagnostics.packageCounts.noActiveScenarios += 1;
+      pushRejectedPackageSample(diagnostics, {
+        packageId: pkg.id,
+        title: pkg.title,
+        mode: pkg.mode,
+        reason: "no_active_scenarios",
+        activeScenarioCount,
+        totalPrice,
+      });
+      return;
+    }
+
+    let matchedForPackage = false;
+    let bestRejectedReason:
+      | "below_threshold"
+      | "budget_below_min"
+      | "budget_above_max"
+      | "nan_match_percent"
+      | undefined;
+    let bestRejectedMatchPercent = -1;
+    let bestRejectedScenarioOrder: number | undefined;
+
+    activeScenarios.forEach((scenario) => {
       const { isBudgetOk, matchPercent, debug } = calculateMatchPercent(
         scenario,
         params.input,
@@ -265,9 +433,39 @@ export function matchPackageScenarios(params: {
         params.debug,
         threshold,
       );
-      if (!isBudgetOk) return;
-      if (Number.isNaN(matchPercent) || matchPercent < threshold) return;
 
+      if (!isBudgetOk) {
+        if (debug?.budget.reason === "below_min") diagnostics.scenarioOutcomeCounts.budgetBelowMin += 1;
+        else diagnostics.scenarioOutcomeCounts.budgetAboveMax += 1;
+
+        if (bestRejectedReason === undefined) {
+          bestRejectedReason = debug?.budget.reason === "below_min" ? "budget_below_min" : "budget_above_max";
+          bestRejectedScenarioOrder = scenario.order;
+        }
+        return;
+      }
+
+      if (Number.isNaN(matchPercent)) {
+        diagnostics.scenarioOutcomeCounts.nanMatchPercent += 1;
+        if (bestRejectedReason === undefined) {
+          bestRejectedReason = "nan_match_percent";
+          bestRejectedScenarioOrder = scenario.order;
+        }
+        return;
+      }
+
+      if (matchPercent < threshold) {
+        diagnostics.scenarioOutcomeCounts.belowThreshold += 1;
+        if (matchPercent > bestRejectedMatchPercent) {
+          bestRejectedMatchPercent = matchPercent;
+          bestRejectedReason = "below_threshold";
+          bestRejectedScenarioOrder = scenario.order;
+        }
+        return;
+      }
+
+      diagnostics.scenarioOutcomeCounts.matched += 1;
+      matchedForPackage = true;
       matches.push({
         package: { ...pkg, totalPrice, currency: packageProducts[0].currency },
         scenario,
@@ -277,6 +475,20 @@ export function matchPackageScenarios(params: {
         ...(debug ? { debug } : {}),
       });
     });
+
+    if (!matchedForPackage) {
+      diagnostics.packageCounts.rejectedByScenarios += 1;
+      pushRejectedPackageSample(diagnostics, {
+        packageId: pkg.id,
+        title: pkg.title,
+        mode: pkg.mode,
+        reason: bestRejectedReason ?? "below_threshold",
+        activeScenarioCount,
+        ...(bestRejectedMatchPercent >= 0 ? { bestMatchPercent: bestRejectedMatchPercent } : {}),
+        ...(bestRejectedScenarioOrder !== undefined ? { bestScenarioOrder: bestRejectedScenarioOrder } : {}),
+        totalPrice,
+      });
+    }
   });
 
   const ordered = matches.sort(sortMatches);
@@ -301,8 +513,33 @@ export function matchPackageScenarios(params: {
           "Singurul scenariu eligibil pentru pachet după filtre (buget + prag matchPercent) și sortare.";
       }
     }
-    if (best) bestMatches.push(best);
+    if (best) {
+      diagnostics.packageCounts.matched += 1;
+      pushMatchedPackageSample(diagnostics, {
+        packageId: best.package.id,
+        title: best.package.title,
+        matchPercent: best.matchPercent,
+        scenarioOrder: best.scenario.order,
+        totalPrice: best.package.totalPrice,
+      });
+      bestMatches.push(best);
+    }
   });
 
-  return bestMatches.sort(sortMatches);
+  return {
+    matches: bestMatches.sort(sortMatches),
+    diagnostics,
+  };
+}
+
+export function matchPackageScenarios(params: {
+  packages: WithId<RecommendationPackage>[];
+  productsById: Map<string, WithId<Product>>;
+  input: RecommendationInput;
+  minMatchPercent?: number;
+  askedKeys?: string[];
+  questionnaireKeys?: string[];
+  debug?: boolean;
+}): PackageMatch[] {
+  return evaluatePackageScenarios(params).matches;
 }

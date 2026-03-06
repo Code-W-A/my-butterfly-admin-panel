@@ -1,16 +1,15 @@
 import { getFirestore } from "firebase-admin/firestore";
+import * as logger from "firebase-functions/logger";
 import { type CallableRequest, HttpsError } from "firebase-functions/v2/https";
 import { z } from "zod";
 
-import { matchProductScenarios } from "./match";
-import { matchPackageScenarios } from "./match-packages";
+import { evaluatePackageScenarios } from "./match-packages";
 import { buildRecommendationInput, computeSkippedQuestions, getOrderedQuestions } from "./questionnaire";
 import type {
   ComputeRecommendationsRequest,
   ComputeRecommendationsResponse,
   PackageLite,
   Product,
-  ProductLite,
   QuestionnaireQuestion,
   RecommendationPackage,
   RecommendationSkippedQuestion,
@@ -42,38 +41,7 @@ export const ensureAuthenticated = (auth: CallableRequest<unknown>["auth"]) => {
   return auth.uid;
 };
 
-export const resolveResultMode = (packageMatchCount: number): "packages" | "products" =>
-  packageMatchCount > 0 ? "packages" : "products";
-
-const toProductLite = (product: WithId<Product>): ProductLite => ({
-  id: product.id,
-  active: Boolean(product.active),
-  name: product.name,
-  ...(product.brand ? { brand: product.brand } : {}),
-  ...(product.imageUrls?.length ? { imageUrls: product.imageUrls } : {}),
-  ...(product.imageUrl ? { imageUrl: product.imageUrl } : {}),
-  ...(product.productUrl ? { productUrl: product.productUrl } : {}),
-  price: Number(product.price ?? 0),
-  currency: product.currency === "EUR" ? "EUR" : "RON",
-  tags: {
-    level: product.tags?.level ?? [],
-    style: product.tags?.style ?? [],
-    distance: product.tags?.distance ?? [],
-  },
-  attributes: {
-    ...(product.attributes?.control !== undefined ? { control: product.attributes.control } : {}),
-    ...(product.attributes?.spin !== undefined ? { spin: product.attributes.spin } : {}),
-    ...(product.attributes?.speed !== undefined ? { speed: product.attributes.speed } : {}),
-  },
-  ...(product.source?.provider === "prestashop" && product.source.prestashopProductId
-    ? {
-        source: {
-          provider: "prestashop" as const,
-          prestashopProductId: product.source.prestashopProductId,
-        },
-      }
-    : {}),
-});
+export const resolveResultMode = (): "packages" => "packages";
 
 const toCanonicalPackageRole = (role: unknown): PackageLite["items"][number]["role"] => {
   if (role === "single" || role === "blade" || role === "forehand" || role === "backhand") return role;
@@ -181,19 +149,14 @@ export async function computeRecommendationsCallable(
     orderedQuestions,
     payload.answers,
   );
+  const skippedReasonCounts = skippedQuestions.reduce<Record<string, number>>((acc, item) => {
+    acc[item.reason] = (acc[item.reason] ?? 0) + 1;
+    return acc;
+  }, {});
 
   const productsById = new Map(products.map((product) => [product.id, product]));
 
-  const productMatches = matchProductScenarios({
-    products,
-    input,
-    minMatchPercent,
-    askedKeys,
-    questionnaireKeys,
-    debug: payload.debug,
-  });
-
-  const packageMatches = matchPackageScenarios({
+  const { matches: packageMatches, diagnostics: packageDiagnostics } = evaluatePackageScenarios({
     packages,
     productsById,
     input,
@@ -203,7 +166,34 @@ export async function computeRecommendationsCallable(
     debug: payload.debug,
   });
 
-  const resultMode = resolveResultMode(packageMatches.length);
+  const resultMode = resolveResultMode();
+
+  logger.info("computeRecommendations summary", {
+    questionnaireId: payload.questionnaireId,
+    debug: Boolean(payload.debug),
+    totalQuestionCount: questions.length,
+    orderedQuestionCount: orderedQuestions.length,
+    askedQuestionIdsCount: askedQuestionIds.length,
+    askedKeys,
+    skippedReasonCounts,
+    minMatchPercent,
+    loadedProductsCount: products.length,
+    loadedPackagesCount: packages.length,
+    packageMatchCount: packageMatches.length,
+    resultMode,
+    packageDiagnostics,
+  });
+
+  if (packageMatches.length === 0) {
+    logger.warn("computeRecommendations produced zero package matches", {
+      questionnaireId: payload.questionnaireId,
+      askedKeys,
+      minMatchPercent,
+      loadedProductsCount: products.length,
+      loadedPackagesCount: packages.length,
+      packageDiagnostics,
+    });
+  }
 
   return {
     questionnaireId: payload.questionnaireId,
@@ -215,14 +205,7 @@ export async function computeRecommendationsCallable(
     orderedQuestionCount: orderedQuestions.length,
     totalQuestionCount: questions.length,
     resultMode,
-    productMatches: productMatches.map((match) => ({
-      product: toProductLite(match.product),
-      scenario: match.scenario,
-      fitScore: match.fitScore,
-      matchPercent: match.matchPercent,
-      matchedPreferences: match.matchedPreferences,
-      ...(match.debug ? { debug: match.debug } : {}),
-    })),
+    productMatches: [],
     packageMatches: packageMatches.map((match) => ({
       package: toPackageLite(match.package),
       scenario: match.scenario,

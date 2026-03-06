@@ -1,6 +1,7 @@
 import type { QuestionnaireQuestion, WithId } from "../../firestore/types";
 import {
   analyzeQuestionnaireScenario,
+  appendRecommendationScenarios,
   type ScenarioDraft,
   serializeScenarioDraft,
   toScenarioDraft,
@@ -180,4 +181,38 @@ test("updateScenarioQuestionSelection writes and clears conditions by question k
 
   const cleared = updateScenarioQuestionSelection(withValue, { key: "style" }, []);
   assert.deepEqual(cleared.conditions, {});
+});
+
+test("appendRecommendationScenarios appends and rewrites order after existing scenarios", () => {
+  const merged = appendRecommendationScenarios(
+    [
+      {
+        active: true,
+        order: 2,
+        explanationTemplate: "",
+        conditions: { style: ["offensive"] },
+      },
+    ],
+    [
+      {
+        active: true,
+        order: 0,
+        explanationTemplate: "",
+        conditions: { level: ["advanced"] },
+      },
+      {
+        active: false,
+        order: 0,
+        explanationTemplate: "info",
+        conditions: { distance: ["mid"] },
+      },
+    ],
+  );
+
+  assert.deepEqual(
+    merged.map((scenario) => scenario.order),
+    [2, 3, 4],
+  );
+  assert.deepEqual(merged[1]?.conditions, { level: ["advanced"] });
+  assert.equal(merged[2]?.explanationTemplate, "info");
 });

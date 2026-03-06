@@ -6,6 +6,7 @@ import {
   doc,
   documentId,
   getDoc,
+  getDocFromServer,
   getDocs,
   limit,
   orderBy,
@@ -125,6 +126,22 @@ const normalizeAttributes = (attributes: RecommendationPackage["attributes"]) =>
   return hasAnyValue ? normalized : undefined;
 };
 
+const normalizeRecommendationScenarios = (recommendationScenarios: ProductRecommendationScenario[] | undefined) =>
+  (recommendationScenarios ?? []).map((scenario) => ({
+    active: Boolean(scenario.active),
+    order: Number(scenario.order ?? 0),
+    explanationTemplate: String(scenario.explanationTemplate ?? "").trim(),
+    ...(scenario.questionnaireBinding?.questionnaireId
+      ? {
+          questionnaireBinding: {
+            questionnaireId: String(scenario.questionnaireBinding.questionnaireId).trim(),
+            questionnaireTitleSnapshot: String(scenario.questionnaireBinding.questionnaireTitleSnapshot ?? "").trim(),
+          },
+        }
+      : {}),
+    conditions: scenario.conditions ?? {},
+  })) satisfies ProductRecommendationScenario[];
+
 async function resolvePackageTotals(items: RecommendationPackageItem[]) {
   const uniqueIds = [...new Set(items.map((item) => item.productId).filter(Boolean))];
   if (uniqueIds.length === 0) {
@@ -190,20 +207,7 @@ async function validateAndEnrichPayload(input: PackagePayloadInput) {
     mode,
     items: persistedItems,
     ...(attributes ? { attributes } : {}),
-    recommendationScenarios: (input.recommendationScenarios ?? []).map((scenario) => ({
-      active: Boolean(scenario.active),
-      order: Number(scenario.order ?? 0),
-      explanationTemplate: String(scenario.explanationTemplate ?? "").trim(),
-      ...(scenario.questionnaireBinding?.questionnaireId
-        ? {
-            questionnaireBinding: {
-              questionnaireId: String(scenario.questionnaireBinding.questionnaireId).trim(),
-              questionnaireTitleSnapshot: String(scenario.questionnaireBinding.questionnaireTitleSnapshot ?? "").trim(),
-            },
-          }
-        : {}),
-      conditions: scenario.conditions ?? {},
-    })) satisfies ProductRecommendationScenario[],
+    recommendationScenarios: normalizeRecommendationScenarios(input.recommendationScenarios),
     totalPrice,
     currency,
   } satisfies Omit<RecommendationPackage, "createdAt" | "updatedAt">;
@@ -247,6 +251,15 @@ export async function getPackage(packageId: string): Promise<WithId<Recommendati
   if (!db) return null;
   const ref = doc(db, PACKAGES_COLLECTION, packageId);
   const snapshot = await getDoc(ref);
+  if (!snapshot.exists()) return null;
+  return { id: snapshot.id, ...(snapshot.data() as RecommendationPackage) };
+}
+
+export async function getPackageFromServer(packageId: string): Promise<WithId<RecommendationPackage> | null> {
+  const { db } = initFirebase();
+  if (!db) return null;
+  const ref = doc(db, PACKAGES_COLLECTION, packageId);
+  const snapshot = await getDocFromServer(ref);
   if (!snapshot.exists()) return null;
   return { id: snapshot.id, ...(snapshot.data() as RecommendationPackage) };
 }
@@ -306,6 +319,25 @@ export async function updatePackage(packageId: string, input: PackagePayloadInpu
         ? { description: nextDescription }
         : { description: deleteField() }
       : {}),
+    updatedAt: serverTimestamp(),
+  });
+  await touchMetaConfig();
+}
+
+export async function updatePackageRecommendationScenarios(
+  packageId: string,
+  recommendationScenarios: ProductRecommendationScenario[],
+) {
+  const { db } = initFirebase();
+  if (!db) throw new Error("Firestore not initialized.");
+
+  const existing = await getPackage(packageId);
+  if (!existing) {
+    throw new Error("Pachetul nu există.");
+  }
+
+  await updateDoc(doc(db, PACKAGES_COLLECTION, packageId), {
+    recommendationScenarios: normalizeRecommendationScenarios(recommendationScenarios),
     updatedAt: serverTimestamp(),
   });
   await touchMetaConfig();

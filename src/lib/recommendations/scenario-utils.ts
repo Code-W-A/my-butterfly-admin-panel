@@ -74,6 +74,19 @@ export const serializeScenarioDraft = (scenario: ScenarioDraft): ProductRecommen
   ),
 });
 
+export const appendRecommendationScenarios = (
+  existing: ProductRecommendationScenario[] | undefined,
+  incoming: ProductRecommendationScenario[],
+) => {
+  const base = existing ? [...existing] : [];
+  const maxOrder = base.length ? Math.max(...base.map((scenario) => Number(scenario.order ?? 0))) : -1;
+  const appended = incoming.map((scenario, index) => ({
+    ...scenario,
+    order: maxOrder + index + 1,
+  }));
+  return [...base, ...appended];
+};
+
 export const toScenarioDraft = (
   source: ProductRecommendationScenario,
   vocabularyKeys: string[],

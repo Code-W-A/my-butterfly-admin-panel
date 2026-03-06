@@ -8,6 +8,7 @@ import { Plus } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
@@ -30,6 +31,7 @@ export default function PackagesPage() {
   const [productNameById, setProductNameById] = useState<Record<string, string>>({});
   const [search, setSearch] = useState("");
   const [activeOnly, setActiveOnly] = useState(false);
+  const [withoutScenariosOnly, setWithoutScenariosOnly] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -62,12 +64,14 @@ export default function PackagesPage() {
 
   const filteredItems = useMemo(() => {
     const normalized = search.trim().toLowerCase();
-    if (!normalized) return items;
     return items.filter((item) => {
+      const hasScenarios = (item.recommendationScenarios?.length ?? 0) > 0;
+      if (withoutScenariosOnly && hasScenarios) return false;
+      if (!normalized) return true;
       const haystack = `${item.title} ${item.description ?? ""}`.toLowerCase();
       return haystack.includes(normalized);
     });
-  }, [items, search]);
+  }, [items, search, withoutScenariosOnly]);
 
   const handleDelete = async (item: WithId<RecommendationPackage>) => {
     if (!window.confirm(`Ștergi pachetul "${item.title}"?`)) return;
@@ -118,9 +122,18 @@ export default function PackagesPage() {
           placeholder="Caută după titlu sau descriere"
           className="md:max-w-sm"
         />
-        <div className="flex items-center gap-2">
-          <Switch checked={activeOnly} onCheckedChange={setActiveOnly} />
-          <span className="text-sm">Doar active</span>
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-2">
+            <Switch checked={activeOnly} onCheckedChange={setActiveOnly} />
+            <span className="text-sm">Doar active</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Checkbox
+              checked={withoutScenariosOnly}
+              onCheckedChange={(checked) => setWithoutScenariosOnly(checked === true)}
+            />
+            <span className="text-sm">Fără scenarii</span>
+          </div>
         </div>
       </div>
 

@@ -1,6 +1,6 @@
 import { resolveResultMode } from "../compute";
 import { matchProductScenarios } from "../match";
-import { matchPackageScenarios } from "../match-packages";
+import { evaluatePackageScenarios, matchPackageScenarios } from "../match-packages";
 import type { Product, RecommendationPackage, WithId } from "../types";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -201,7 +201,32 @@ test("package fitScore uses blade product when available", () => {
   assert.equal(result[0].fitScore, 9);
 });
 
-test("resolveResultMode returns packages when package matches exist", () => {
-  assert.equal(resolveResultMode(2), "packages");
-  assert.equal(resolveResultMode(0), "products");
+test("package diagnostics report missing package products", () => {
+  const productsById = new Map<string, WithId<Product>>();
+  const pkg: WithId<RecommendationPackage> = {
+    id: "pkg-missing",
+    active: true,
+    title: "pkg missing",
+    mode: "single",
+    items: [{ role: "single", productId: "missing-product" }],
+    totalPrice: 100,
+    currency: "RON",
+    recommendationScenarios: [{ active: true, order: 0, explanationTemplate: "", conditions: {} }],
+  };
+
+  const result = evaluatePackageScenarios({
+    packages: [pkg],
+    productsById,
+    input: {},
+    minMatchPercent: 0,
+  });
+
+  assert.equal(result.matches.length, 0);
+  assert.equal(result.diagnostics.packageCounts.missingProducts, 1);
+  assert.equal(result.diagnostics.sampleRejectedPackages[0]?.reason, "missing_products");
+  assert.deepEqual(result.diagnostics.sampleRejectedPackages[0]?.missingProductIds, ["missing-product"]);
+});
+
+test("resolveResultMode is pinned to packages", () => {
+  assert.equal(resolveResultMode(), "packages");
 });

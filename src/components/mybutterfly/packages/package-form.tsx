@@ -382,6 +382,7 @@ export function PackageForm({
   const [vocabularyCategories, setVocabularyCategories] = useState<WithId<VocabularyCategory>[]>([]);
   const [vocabularyError, setVocabularyError] = useState<string | null>(null);
   const [scenarios, setScenarios] = useState<ScenarioDraft[]>([]);
+  const scenariosRef = useRef<ScenarioDraft[]>([]);
   const [isScenarioDialogOpen, setIsScenarioDialogOpen] = useState(false);
   const [editingScenarioIndex, setEditingScenarioIndex] = useState<number | null>(null);
   const [scenarioDialogMode, setScenarioDialogMode] = useState<"add" | "edit">("edit");
@@ -402,6 +403,14 @@ export function PackageForm({
   const [questionnaireQuestionsLoading, setQuestionnaireQuestionsLoading] = useState<Record<string, boolean>>({});
   const [questionnaireQuestionsError, setQuestionnaireQuestionsError] = useState<Record<string, string | null>>({});
   const importedPresetRuleIdsRef = useRef<Set<string>>(new Set());
+  const initializedScenarioSourceRef = useRef<RecommendationPackage | undefined>(undefined);
+
+  const updateScenarios = useCallback((updater: (prev: ScenarioDraft[]) => ScenarioDraft[]) => {
+    const next = updater(scenariosRef.current);
+    scenariosRef.current = next;
+    setScenarios(next);
+    return next;
+  }, []);
 
   const sortedVocabularyCategories = useMemo(
     () => vocabularyCategories.slice().sort((a, b) => a.order - b.order),
@@ -473,14 +482,18 @@ export function PackageForm({
 
   useEffect(() => {
     if (!initialValues) {
+      initializedScenarioSourceRef.current = undefined;
+      scenariosRef.current = [];
       setScenarios([]);
       return;
     }
-    setScenarios(
-      (initialValues.recommendationScenarios ?? []).map((scenario) =>
-        toScenarioDraft(scenario, vocabularyKeys, generateClientId()),
-      ),
+    if (initializedScenarioSourceRef.current === initialValues) return;
+    initializedScenarioSourceRef.current = initialValues;
+    const nextScenarios = (initialValues.recommendationScenarios ?? []).map((scenario) =>
+      toScenarioDraft(scenario, vocabularyKeys, generateClientId()),
     );
+    scenariosRef.current = nextScenarios;
+    setScenarios(nextScenarios);
   }, [initialValues, vocabularyKeys]);
 
   useEffect(() => {
@@ -578,7 +591,7 @@ export function PackageForm({
           setFormError((prev) => prev ?? "Nu am găsit regula preset pentru import sau nu are scenariu valid.");
           return;
         }
-        setScenarios((prev) => {
+        updateScenarios((prev) => {
           const nextOrder = prev.length ? Math.max(...prev.map((scenario) => scenario.order)) + 1 : 0;
           return [
             ...prev,
@@ -600,7 +613,7 @@ export function PackageForm({
     return () => {
       isCancelled = true;
     };
-  }, [presetImportRuleId, vocabularyKeys]);
+  }, [presetImportRuleId, updateScenarios, vocabularyKeys]);
 
   const productsById = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
 
@@ -660,7 +673,7 @@ export function PackageForm({
   };
 
   const updateScenario = (index: number, patch: Partial<ScenarioDraft>) => {
-    setScenarios((prev) => prev.map((item, idx) => (idx === index ? { ...item, ...patch } : item)));
+    updateScenarios((prev) => prev.map((item, idx) => (idx === index ? { ...item, ...patch } : item)));
   };
 
   const openScenarioDialog = (index: number) => {
@@ -670,19 +683,23 @@ export function PackageForm({
   };
 
   const handleAddScenario = () => {
-    const nextOrder = scenarios.length ? Math.max(...scenarios.map((scenario) => scenario.order)) + 1 : 0;
+    const nextOrder = scenariosRef.current.length
+      ? Math.max(...scenariosRef.current.map((scenario) => scenario.order)) + 1
+      : 0;
     const nextScenario = createLegacyScenarioDraft(generateClientId(), nextOrder, vocabularyKeys);
-    setScenarios((prev) => [...prev, nextScenario]);
-    setEditingScenarioIndex(scenarios.length);
+    const nextScenarios = updateScenarios((prev) => [...prev, nextScenario]);
+    setEditingScenarioIndex(nextScenarios.length - 1);
     setScenarioDialogMode("add");
     setIsScenarioDialogOpen(true);
   };
 
   const handleDeleteScenario = (index: number) => {
-    setScenarios((prev) => prev.filter((_, idx) => idx !== index));
+    updateScenarios((prev) => prev.filter((_, idx) => idx !== index));
     if (editingScenarioIndex === index) {
       setIsScenarioDialogOpen(false);
       setEditingScenarioIndex(null);
+    } else if (editingScenarioIndex !== null && editingScenarioIndex > index) {
+      setEditingScenarioIndex(editingScenarioIndex - 1);
     }
   };
 
@@ -701,7 +718,7 @@ export function PackageForm({
         setRuleImportError("Regulile selectate nu conțin scenarii valide.");
         return;
       }
-      setScenarios((prev) => {
+      updateScenarios((prev) => {
         const maxOrder = prev.length ? Math.max(...prev.map((scenario) => scenario.order)) : -1;
         return [
           ...prev,
@@ -721,15 +738,17 @@ export function PackageForm({
   const handleImportQuestionnaireScenario = () => {
     if (!selectedQuestionnaire) return;
     if (!selectedQuestionnaireAnalysis || selectedQuestionnaireAnalysis.eligibleQuestions.length === 0) return;
-    const nextOrder = scenarios.length ? Math.max(...scenarios.map((scenario) => scenario.order)) + 1 : 0;
+    const nextOrder = scenariosRef.current.length
+      ? Math.max(...scenariosRef.current.map((scenario) => scenario.order)) + 1
+      : 0;
     const nextScenario = createQuestionnaireScenarioDraft({
       id: generateClientId(),
       order: nextOrder,
       questionnaireId: selectedQuestionnaire.id,
       questionnaireTitleSnapshot: selectedQuestionnaire.title,
     });
-    setScenarios((prev) => [...prev, nextScenario]);
-    setEditingScenarioIndex(scenarios.length);
+    const nextScenarios = updateScenarios((prev) => [...prev, nextScenario]);
+    setEditingScenarioIndex(nextScenarios.length - 1);
     setScenarioDialogMode("add");
     setIsQuestionnaireDialogOpen(false);
     setIsScenarioDialogOpen(true);
@@ -785,7 +804,7 @@ export function PackageForm({
         spin: values.attributes.spin,
         speed: values.attributes.speed,
       }),
-      recommendationScenarios: scenarios.map(serializeScenarioDraft),
+      recommendationScenarios: scenariosRef.current.map(serializeScenarioDraft),
     };
     try {
       setFormError(null);
@@ -1295,7 +1314,7 @@ export function PackageForm({
                               .map((option) => ({ value: option.value, label: option.label }))}
                             value={editingQuestionnaireAnalysis.selectionsByQuestionId[question.id] ?? []}
                             onChange={(value) =>
-                              setScenarios((prev) =>
+                              updateScenarios((prev) =>
                                 prev.map((item, idx) =>
                                   idx === editingScenarioIndex
                                     ? updateScenarioQuestionSelection(item, question, value)

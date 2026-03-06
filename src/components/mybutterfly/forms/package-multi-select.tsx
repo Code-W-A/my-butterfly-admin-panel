@@ -18,9 +18,19 @@ type PackageMultiSelectProps = {
   packages: PackageOption[];
   value: string[];
   onChange: (value: string[]) => void;
+  onLoadMore?: () => void;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
 };
 
-export function PackageMultiSelect({ packages, value, onChange }: PackageMultiSelectProps) {
+export function PackageMultiSelect({
+  packages,
+  value,
+  onChange,
+  onLoadMore,
+  hasMore = false,
+  isLoadingMore = false,
+}: PackageMultiSelectProps) {
   const [search, setSearch] = useState("");
 
   const filtered = useMemo(() => {
@@ -43,8 +53,17 @@ export function PackageMultiSelect({ packages, value, onChange }: PackageMultiSe
 
   return (
     <div className="space-y-2">
-      <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Caută pachet" />
-      <ScrollArea className="h-48 rounded-md border p-3">
+      <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Caută în pagina curentă" />
+      <ScrollArea
+        className="h-48 rounded-md border p-3"
+        onScrollCapture={(event) => {
+          const target = event.currentTarget;
+          const nearBottom = target.scrollTop + target.clientHeight >= target.scrollHeight - 24;
+          if (nearBottom && hasMore && onLoadMore && !isLoadingMore) {
+            onLoadMore();
+          }
+        }}
+      >
         <div className="space-y-2">
           {filtered.map((item) => {
             const checkboxId = `package-select-${item.id}`;
@@ -58,6 +77,11 @@ export function PackageMultiSelect({ packages, value, onChange }: PackageMultiSe
               </div>
             );
           })}
+          {hasMore ? (
+            <div className="pt-2 text-center text-muted-foreground text-xs">
+              {isLoadingMore ? "Se încarcă..." : "Derulează pentru mai multe pachete"}
+            </div>
+          ) : null}
         </div>
       </ScrollArea>
     </div>

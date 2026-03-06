@@ -5,10 +5,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 
 import { zodResolver } from "@hookform/resolvers/zod";
+import { Boxes, Package } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { PageHelpDialog } from "@/components/mybutterfly/help/page-help-dialog";
+import { BulkQuestionnaireScenarioImportDialog } from "@/components/mybutterfly/questionnaires/bulk-questionnaire-scenario-import-dialog";
 import { QuestionEditor } from "@/components/mybutterfly/questionnaires/question-editor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -74,6 +76,8 @@ export default function QuestionnaireDetailPage() {
   }, [questions, sort]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [isBulkProductsOpen, setIsBulkProductsOpen] = useState(false);
+  const [isBulkPackagesOpen, setIsBulkPackagesOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
   const form = useForm<z.infer<typeof FormSchema>>({
@@ -163,6 +167,14 @@ export default function QuestionnaireDetailPage() {
           <p className="text-muted-foreground text-sm">Actualizează detaliile chestionarului și întrebările.</p>
         </div>
         <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setIsBulkProductsOpen(true)}>
+            <Boxes className="mr-2 size-4" />
+            Importa in produse
+          </Button>
+          <Button variant="outline" onClick={() => setIsBulkPackagesOpen(true)}>
+            <Package className="mr-2 size-4" />
+            Importa in pachete
+          </Button>
           <PageHelpDialog helpKey="questionnaires.edit" />
           <Button variant="destructive" onClick={handleDeleteQuestionnaire} disabled={isDeleting}>
             {isDeleting ? "Se șterge..." : "Șterge chestionar"}
@@ -331,6 +343,22 @@ export default function QuestionnaireDetailPage() {
           />
         </DialogContent>
       </Dialog>
+
+      <BulkQuestionnaireScenarioImportDialog
+        open={isBulkProductsOpen}
+        onOpenChange={setIsBulkProductsOpen}
+        questionnaire={questionnaire}
+        questions={questions}
+        targetType="products"
+      />
+
+      <BulkQuestionnaireScenarioImportDialog
+        open={isBulkPackagesOpen}
+        onOpenChange={setIsBulkPackagesOpen}
+        questionnaire={questionnaire}
+        questions={questions}
+        targetType="packages"
+      />
     </div>
   );
 }

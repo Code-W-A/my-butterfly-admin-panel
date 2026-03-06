@@ -6,13 +6,20 @@ import { useRouter } from "next/navigation";
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { deleteField } from "firebase/firestore";
-import { Loader2 } from "lucide-react";
+import { Loader2, Plus, Trash2 } from "lucide-react";
 import { useFieldArray, useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { InfoTip } from "@/components/ui/info-tip";
 import { Input } from "@/components/ui/input";
@@ -20,10 +27,18 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { logFirebaseError } from "@/lib/firebase/error-utils.client";
+import { getFirebaseErrorInfo, logFirebaseError } from "@/lib/firebase/error-utils.client";
 import { createQuestion, deleteQuestion, listAllQuestionOptionValues, updateQuestion } from "@/lib/firestore/questions";
 import type { QuestionnaireQuestion, QuestionnaireQuestionVisibilityRule, WithId } from "@/lib/firestore/types";
-import { listVocabularyKeys, listVocabularyOptions, type VocabularyCategory } from "@/lib/firestore/vocabulary";
+import {
+  addVocabularyOptionFromLabel,
+  createVocabularyKey,
+  ensureVocabularyInitialized,
+  listVocabularyKeys,
+  listVocabularyOptions,
+  normalizeVocabularyValue,
+  type VocabularyCategory,
+} from "@/lib/firestore/vocabulary";
 
 const questionSchema = z.object({
   active: z.boolean(),
@@ -57,9 +72,29 @@ const questionSchema = z.object({
     .optional(),
 });
 
+const categorySchema = z.object({
+  title: z.string().min(1),
+  description: z.string().optional(),
+  standardQuestion: z.string().optional(),
+  order: z.coerce.number().int().min(0).optional(),
+  active: z.boolean().optional(),
+});
+
 type QuestionFormValues = z.infer<typeof questionSchema>;
 type OptionDraft = NonNullable<QuestionFormValues["options"]>[number];
 type VocabularyKeyOption = { value: string; label: string };
+type CategoryOptionDraft = {
+  id: string;
+  label: string;
+};
+type CategoryDraft = {
+  title: string;
+  description: string;
+  standardQuestion: string;
+  order: string;
+  active: boolean;
+  initialOptions: CategoryOptionDraft[];
+};
 
 const defaultValues: QuestionFormValues = {
   active: true,
@@ -76,6 +111,15 @@ const defaultValues: QuestionFormValues = {
   },
   visibilityRules: [],
 };
+
+const createDefaultCategoryDraft = (order: number, standardQuestion = ""): CategoryDraft => ({
+  title: "",
+  description: "",
+  standardQuestion,
+  order: `${order}`,
+  active: true,
+  initialOptions: [{ id: randomSuffix(), label: "" }],
+});
 
 const questionTypeOptions: Array<{ value: QuestionFormValues["type"]; label: string }> = [
   { value: "single_select", label: "Selecție unică" },
@@ -147,6 +191,18 @@ const generateUniqueValue = (label: string, existing: Set<string>) => {
     if (!existing.has(candidate)) return candidate;
   }
   return null;
+};
+
+const normalizeInitialOptionLabels = (values: CategoryOptionDraft[]) => {
+  const seen = new Set<string>();
+  return values
+    .map((item) => item.label.trim())
+    .filter(Boolean)
+    .filter((item) => {
+      if (seen.has(item.toLowerCase())) return false;
+      seen.add(item.toLowerCase());
+      return true;
+    });
 };
 
 type QuestionEditorProps = {
@@ -247,7 +303,27 @@ export function QuestionEditor({
   const [optionError, setOptionError] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [isCategoryDialogOpen, setIsCategoryDialogOpen] = useState(false);
+  const [isCreatingCategory, setIsCreatingCategory] = useState(false);
+  const [categoryError, setCategoryError] = useState<string | null>(null);
+  const [categoryDraft, setCategoryDraft] = useState<CategoryDraft>(() => createDefaultCategoryDraft(0));
   const prevKeyRef = useRef<string | null>(null);
+  const normalizedKeyValue = String(keyValue ?? "").trim();
+  const duplicateQuestions = useMemo(
+    () =>
+      availableQuestions.filter(
+        (question) => question.id !== selected?.id && String(question.key ?? "").trim() === normalizedKeyValue,
+      ),
+    [availableQuestions, normalizedKeyValue, selected?.id],
+  );
+  const hasDuplicateKey = Boolean(normalizedKeyValue && duplicateQuestions.length > 0);
+  const generatedCategoryKey = normalizeVocabularyValue(categoryDraft.title);
+  const conflictingVocabularyCategory = useMemo(
+    () => vocabularyCategories.find((category) => category.key === generatedCategoryKey) ?? null,
+    [generatedCategoryKey, vocabularyCategories],
+  );
+  const hasGeneratedCategoryKey = Boolean(generatedCategoryKey);
+  const hasGeneratedCategoryKeyConflict = Boolean(generatedCategoryKey && conflictingVocabularyCategory);
 
   const conditionQuestions = useMemo(
     () =>
@@ -266,14 +342,21 @@ export function QuestionEditor({
     [conditionQuestions],
   );
 
-  useEffect(() => {
-    listVocabularyKeys({ includeInactive: true })
-      .then((items) => setVocabularyCategories(items))
-      .catch((err) => {
-        logFirebaseError("QuestionEditor: loadVocabularyKeys", err);
-        setVocabularyCategories([]);
-      });
+  const loadVocabularyCategories = useCallback(async () => {
+    try {
+      const items = await listVocabularyKeys({ includeInactive: true });
+      setVocabularyCategories(items);
+      return items;
+    } catch (err) {
+      logFirebaseError("QuestionEditor: loadVocabularyKeys", err);
+      setVocabularyCategories([]);
+      return [];
+    }
   }, []);
+
+  useEffect(() => {
+    void loadVocabularyCategories();
+  }, [loadVocabularyCategories]);
 
   useEffect(() => {
     if (!vocabularyCategories.length) {
@@ -299,6 +382,28 @@ export function QuestionEditor({
       cancelled = true;
     };
   }, [vocabularyCategories]);
+
+  useEffect(() => {
+    const keyError = form.getFieldState("key").error;
+
+    if (!hasDuplicateKey) {
+      if (keyError?.type === "duplicate") {
+        form.clearErrors("key");
+      }
+      return;
+    }
+
+    if (keyError?.type === "duplicate") {
+      return;
+    }
+
+    if (hasDuplicateKey) {
+      form.setError("key", {
+        type: "duplicate",
+        message: "Cheia este deja folosită în acest chestionar. Alege altă categorie.",
+      });
+    }
+  }, [form, hasDuplicateKey]);
 
   useEffect(() => {
     if (selected) {
@@ -402,6 +507,16 @@ export function QuestionEditor({
     void importVocabularyOptions();
   }, [isVocabularyKey, keyValue, requiresOptions, importVocabularyOptions]);
 
+  const openCreateCategoryDialog = () => {
+    setCategoryError(null);
+    setCategoryDraft(createDefaultCategoryDraft(vocabularyCategories.length, form.getValues("label")?.trim() ?? ""));
+    setIsCategoryDialogOpen(true);
+  };
+
+  const openVocabularyPage = () => {
+    window.open("/dashboard/vocabulary", "_blank", "noopener,noreferrer");
+  };
+
   const openNewOptionDialog = () => {
     setEditingOptionIndex(null);
     setOptionError(null);
@@ -471,6 +586,14 @@ export function QuestionEditor({
   };
 
   const onSubmit = async (values: QuestionFormValues) => {
+    if (hasDuplicateKey) {
+      form.setError("key", {
+        type: "duplicate",
+        message: "Cheia este deja folosită în acest chestionar. Alege altă categorie.",
+      });
+      return;
+    }
+
     let resolvedOptions = values.options ?? [];
     if (requiresOptions && vocabularyKeyValues.includes(String(values.key))) {
       const vocabOptions = await listVocabularyOptions(String(values.key), { includeInactive: true });
@@ -516,10 +639,107 @@ export function QuestionEditor({
     }
   };
 
+  const handleCreateCategory = async () => {
+    try {
+      setCategoryError(null);
+      setIsCreatingCategory(true);
+
+      if (!generatedCategoryKey) {
+        setCategoryError("Titlul trebuie să conțină litere sau cifre ca să putem genera cheia categoriei.");
+        return;
+      }
+
+      if (hasGeneratedCategoryKeyConflict) {
+        setCategoryError(
+          `Există deja categoria „${conflictingVocabularyCategory?.title}” cu cheia „${generatedCategoryKey}”.`,
+        );
+        return;
+      }
+
+      await ensureVocabularyInitialized();
+
+      const parsed = categorySchema.parse({
+        title: categoryDraft.title,
+        description: categoryDraft.description.trim() || undefined,
+        standardQuestion: categoryDraft.standardQuestion.trim() || undefined,
+        order: categoryDraft.order.trim() ? Number(categoryDraft.order) : undefined,
+        active: categoryDraft.active,
+      });
+
+      const createdCategory = await createVocabularyKey({
+        key: generatedCategoryKey,
+        title: parsed.title,
+        description: parsed.description,
+        standardQuestion: parsed.standardQuestion,
+        order: parsed.order,
+        active: parsed.active,
+      });
+
+      const initialOptionLabels = normalizeInitialOptionLabels(categoryDraft.initialOptions);
+      for (const [index, label] of initialOptionLabels.entries()) {
+        await addVocabularyOptionFromLabel(createdCategory.key, {
+          label,
+          order: index,
+          active: true,
+        });
+      }
+
+      await loadVocabularyCategories();
+      form.setValue("key", createdCategory.key, {
+        shouldDirty: true,
+        shouldTouch: true,
+        shouldValidate: true,
+      });
+      if (requiresOptions) {
+        const vocabOptions = await listVocabularyOptions(createdCategory.key, { includeInactive: true });
+        replace(
+          vocabOptions.map((option) => ({
+            value: option.value,
+            label: option.label,
+            order: option.order,
+            active: option.active,
+          })),
+        );
+      }
+
+      setIsCategoryDialogOpen(false);
+      setCategoryDraft(createDefaultCategoryDraft(vocabularyCategories.length));
+    } catch (err) {
+      logFirebaseError("QuestionEditor: createVocabularyCategoryInline", err);
+      const info = getFirebaseErrorInfo(err);
+      setCategoryError(info.message || "Nu am putut crea categoria nouă.");
+    } finally {
+      setIsCreatingCategory(false);
+    }
+  };
+
   const onDelete = async () => {
     if (!selected) return;
     await deleteQuestion(questionnaireId, selected.id);
     onSaved();
+  };
+
+  const addCategoryOptionInput = () => {
+    setCategoryDraft((current) => ({
+      ...current,
+      initialOptions: [...current.initialOptions, { id: randomSuffix(), label: "" }],
+    }));
+  };
+
+  const updateCategoryOptionInput = (index: number, value: string) => {
+    setCategoryDraft((current) => ({
+      ...current,
+      initialOptions: current.initialOptions.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, label: value } : item,
+      ),
+    }));
+  };
+
+  const removeCategoryOptionInput = (index: number) => {
+    setCategoryDraft((current) => ({
+      ...current,
+      initialOptions: current.initialOptions.filter((_, itemIndex) => itemIndex !== index),
+    }));
   };
 
   return (
@@ -615,6 +835,32 @@ export function QuestionEditor({
             />
           </div>
           <div className="text-muted-foreground text-xs leading-relaxed">{keyHelpText}</div>
+          {hasDuplicateKey ? (
+            <div className="space-y-3 rounded-md border border-amber-200 bg-amber-50 p-4">
+              <div className="font-medium text-amber-900">
+                Cheia <span className="font-mono">{normalizedKeyValue}</span> este deja folosită în acest chestionar.
+              </div>
+              <div className="text-amber-900 text-sm">
+                Ca să eviți ambiguități în scenarii și importul din chestionar, creează o categorie nouă în Vocabulary
+                și folosește cheia ei.
+              </div>
+              <div className="space-y-1 text-amber-900 text-sm">
+                {duplicateQuestions.map((question) => (
+                  <div key={question.id}>
+                    Întrebarea #{question.order}: {question.label} ({question.active ? "activă" : "inactivă"})
+                  </div>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" onClick={openCreateCategoryDialog}>
+                  Creează categorie nouă
+                </Button>
+                <Button type="button" variant="outline" onClick={openVocabularyPage}>
+                  Deschide Vocabulary
+                </Button>
+              </div>
+            </div>
+          ) : null}
 
           <FormField
             control={form.control}
@@ -911,7 +1157,7 @@ export function QuestionEditor({
             )}
           </div>
 
-          <Button type="submit" data-tour="questionnaire-add-question" disabled={isSubmitting}>
+          <Button type="submit" data-tour="questionnaire-add-question" disabled={isSubmitting || hasDuplicateKey}>
             {isSubmitting ? (
               <>
                 <Loader2 className="mr-2 size-4 animate-spin" />
@@ -925,6 +1171,163 @@ export function QuestionEditor({
           </Button>
         </form>
       </Form>
+
+      <Dialog
+        open={isCategoryDialogOpen}
+        onOpenChange={(open) => {
+          setIsCategoryDialogOpen(open);
+          if (!open) {
+            setCategoryError(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Creează categorie nouă</DialogTitle>
+            <DialogDescription>
+              Categoria nouă va fi salvată în Vocabulary și va putea fi folosită imediat de această întrebare.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-2 md:col-span-2">
+              <Label className="flex items-center gap-2">
+                <InfoTip text="Numele categoriei așa cum apare în admin și în liste." />
+                Titlu
+              </Label>
+              <Input
+                value={categoryDraft.title}
+                onChange={(event) => setCategoryDraft((current) => ({ ...current, title: event.target.value }))}
+                placeholder="ex: Punct forte"
+              />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label className="flex items-center gap-2">
+                <InfoTip text="Cheia se generează automat din titlu și trebuie să fie unică în Vocabulary." />
+                Cheie generată
+              </Label>
+              <div className="rounded-md border bg-muted px-3 py-2 font-mono text-sm">
+                {generatedCategoryKey || "Introduce un titlu valid"}
+              </div>
+              {hasGeneratedCategoryKeyConflict ? (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-900 text-sm">
+                  Există deja categoria <span className="font-medium">„{conflictingVocabularyCategory?.title}”</span> cu
+                  cheia <span className="font-mono"> {generatedCategoryKey}</span>. Alege alt titlu.
+                </div>
+              ) : null}
+              {!hasGeneratedCategoryKey && categoryDraft.title.trim() ? (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-900 text-sm">
+                  Din titlul actual nu se poate genera o cheie validă. Folosește litere sau cifre.
+                </div>
+              ) : null}
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label className="flex items-center gap-2">
+                <InfoTip text="Descriere internă pentru admin. Opțional." />
+                Descriere (opțional)
+              </Label>
+              <Textarea
+                rows={2}
+                value={categoryDraft.description}
+                onChange={(event) => setCategoryDraft((current) => ({ ...current, description: event.target.value }))}
+                placeholder="ex: Categorie nouă pentru întrebări despre punctul forte."
+              />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label className="flex items-center gap-2">
+                <InfoTip text="Textul standard al întrebării. Se completează automat când selectezi categoria." />
+                Întrebare standard (opțional)
+              </Label>
+              <Input
+                value={categoryDraft.standardQuestion}
+                onChange={(event) =>
+                  setCategoryDraft((current) => ({ ...current, standardQuestion: event.target.value }))
+                }
+                placeholder="ex: Care este punctul tău forte?"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="flex items-center gap-2">
+                <InfoTip text="Ordinea în care apare categoria în liste. Mai mic = mai sus." />
+                Ordine
+              </Label>
+              <Input
+                value={categoryDraft.order}
+                onChange={(event) => setCategoryDraft((current) => ({ ...current, order: event.target.value }))}
+                placeholder="0"
+              />
+            </div>
+            <div className="flex items-end justify-between rounded-md border p-3">
+              <Label className="flex items-center gap-2">
+                <InfoTip text="Dacă este oprită, categoria există în Vocabulary dar poate fi ascunsă în selecții." />
+                Activ
+              </Label>
+              <Switch
+                checked={categoryDraft.active}
+                onCheckedChange={(checked) => setCategoryDraft((current) => ({ ...current, active: checked }))}
+              />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <div className="flex items-center justify-between gap-3">
+                <Label className="flex items-center gap-2">
+                  <InfoTip text="Opțiuni inițiale pentru categoria nouă. Valorile tehnice se generează automat." />
+                  Opțiuni inițiale (opțional)
+                </Label>
+                <Button type="button" variant="outline" size="sm" onClick={addCategoryOptionInput}>
+                  <Plus className="mr-2 size-4" />
+                  Adaugă opțiune
+                </Button>
+              </div>
+              <div className="space-y-2">
+                {categoryDraft.initialOptions.length === 0 ? (
+                  <div className="rounded-md border border-dashed p-3 text-muted-foreground text-sm">
+                    Nu ai adăugat opțiuni încă.
+                  </div>
+                ) : (
+                  categoryDraft.initialOptions.map((option, index) => (
+                    <div key={option.id} className="flex items-center gap-2">
+                      <Input
+                        value={option.label}
+                        onChange={(event) => updateCategoryOptionInput(index, event.target.value)}
+                        placeholder={`ex: ${index === 0 ? "Forehand" : index === 1 ? "Backhand" : "Echilibrat"}`}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        onClick={() => removeCategoryOptionInput(index)}
+                        aria-label={`Elimină opțiunea ${index + 1}`}
+                      >
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </div>
+                  ))
+                )}
+              </div>
+              <div className="text-muted-foreground text-xs">
+                Poți adăuga una sau mai multe opțiuni. Etichetele goale sau duplicate se ignoră la salvare.
+              </div>
+            </div>
+          </div>
+          {categoryError ? <div className="text-destructive text-sm">{categoryError}</div> : null}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setIsCategoryDialogOpen(false)}>
+              Anulează
+            </Button>
+            <Button
+              type="button"
+              onClick={handleCreateCategory}
+              disabled={
+                isCreatingCategory ||
+                !categoryDraft.title.trim() ||
+                !hasGeneratedCategoryKey ||
+                hasGeneratedCategoryKeyConflict
+              }
+            >
+              {isCreatingCategory ? "Se creează..." : "Creează"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={isOptionDialogOpen}

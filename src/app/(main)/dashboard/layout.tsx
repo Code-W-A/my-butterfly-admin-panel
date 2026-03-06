@@ -6,6 +6,7 @@ import { AppSidebar } from "@/app/(main)/dashboard/_components/sidebar/app-sideb
 import { AdminGuard } from "@/components/mybutterfly/auth/admin-guard";
 import { LogoutButton } from "@/components/mybutterfly/auth/logout-button";
 import { AdminOnboardingDialog } from "@/components/mybutterfly/help/admin-onboarding-dialog";
+import { ClientOnly } from "@/components/ui/client-only";
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { SIDEBAR_COLLAPSIBLE_VALUES, SIDEBAR_VARIANT_VALUES } from "@/lib/preferences/layout";
@@ -47,14 +48,22 @@ export default async function Layout({ children }: Readonly<{ children: ReactNod
             <div className="flex items-center gap-1 lg:gap-2">
               <SidebarTrigger className="-ml-1" />
               <Separator orientation="vertical" className="mx-2 data-[orientation=vertical]:h-4" />
-              <SearchDialog />
+              <ClientOnly fallback={<div className="h-9 w-28" aria-hidden="true" />}>
+                <SearchDialog />
+              </ClientOnly>
             </div>
             <div className="flex items-center gap-2">
-              <AdminOnboardingDialog triggerLabel="Ghid" autoShow />
-              <LayoutControls />
+              <ClientOnly fallback={<div className="h-9 w-24" aria-hidden="true" />}>
+                <AdminOnboardingDialog triggerLabel="Ghid" autoShow />
+              </ClientOnly>
+              <ClientOnly fallback={<div className="size-9" aria-hidden="true" />}>
+                <LayoutControls />
+              </ClientOnly>
               <ThemeSwitcher />
               <LogoutButton />
-              <AccountSwitcher />
+              <ClientOnly fallback={<div className="size-9 rounded-lg" aria-hidden="true" />}>
+                <AccountSwitcher />
+              </ClientOnly>
             </div>
           </div>
         </header>

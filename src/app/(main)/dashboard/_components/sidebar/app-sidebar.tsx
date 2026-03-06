@@ -5,6 +5,7 @@ import Link from "next/link";
 import { CircleHelp, ClipboardList, Command, Database, File, Search, Settings } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 
+import { ClientOnly } from "@/components/ui/client-only";
 import {
   Sidebar,
   SidebarContent,
@@ -90,7 +91,9 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         {/* <NavSecondary items={data.navSecondary} className="mt-auto" /> */}
       </SidebarContent>
       <SidebarFooter>
-        <NavUser />
+        <ClientOnly fallback={<div className="h-12 rounded-md" aria-hidden="true" />}>
+          <NavUser />
+        </ClientOnly>
       </SidebarFooter>
     </Sidebar>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import Link from "next/link";
 
@@ -79,20 +79,15 @@ export function AdminOnboardingDialog({
 }) {
   const [open, setOpen] = useState(false);
 
-  const isDismissed = useMemo(() => {
-    if (typeof window === "undefined") return true;
-    try {
-      return window.localStorage.getItem(DISMISSED_KEY) === "1";
-    } catch {
-      return true;
-    }
-  }, []);
-
   useEffect(() => {
     if (!autoShow) return;
-    if (isDismissed) return;
+    try {
+      if (window.localStorage.getItem(DISMISSED_KEY) === "1") return;
+    } catch {
+      return;
+    }
     setOpen(true);
-  }, [autoShow, isDismissed]);
+  }, [autoShow]);
 
   const dismiss = () => {
     try {
