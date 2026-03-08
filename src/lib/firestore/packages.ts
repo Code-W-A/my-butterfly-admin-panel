@@ -5,6 +5,7 @@ import {
   deleteField,
   doc,
   documentId,
+  endAt,
   getDoc,
   getDocFromServer,
   getDocs,
@@ -14,6 +15,7 @@ import {
   query,
   serverTimestamp,
   startAfter,
+  startAt,
   updateDoc,
   where,
 } from "firebase/firestore";
@@ -44,6 +46,14 @@ const ROLE_ORDER: Record<PackageItemRole, number> = {
 const TRIPLE_ROLES: PackageItemRole[] = ["blade", "forehand", "backhand"];
 
 type PackagePayloadInput = Omit<RecommendationPackage, "createdAt" | "updatedAt" | "totalPrice" | "currency">;
+
+const normalizePackageSearchValue = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ");
 
 const sortItems = (items: RecommendationPackageItem[]) =>
   items.slice().sort((a, b) => {
@@ -203,6 +213,7 @@ async function validateAndEnrichPayload(input: PackagePayloadInput) {
   return {
     active: Boolean(input.active),
     title,
+    searchTitle: normalizePackageSearchValue(title),
     ...(input.description?.trim() ? { description: input.description.trim() } : {}),
     mode,
     items: persistedItems,
@@ -228,15 +239,29 @@ export async function listPackagesPage(params: {
   pageSize?: number;
   cursor?: QueryDocumentSnapshot;
   activeOnly?: boolean;
+  search?: string;
 }): Promise<{ items: WithId<RecommendationPackage>[]; cursor?: QueryDocumentSnapshot }> {
   const { db } = initFirebase();
   if (!db) return { items: [], cursor: undefined };
 
   const pageSize = params.pageSize ?? 20;
   const base = collection(db, PACKAGES_COLLECTION);
-  const baseQuery = params.activeOnly
-    ? query(base, where("active", "==", true), orderBy("updatedAt", "desc"))
-    : query(base, orderBy("updatedAt", "desc"));
+  const searchValue = String(params.search ?? "").trim();
+  const hasSearch = searchValue.length > 0;
+  const baseQuery = hasSearch
+    ? params.activeOnly
+      ? query(
+          base,
+          where("active", "==", true),
+          orderBy("title"),
+          orderBy("updatedAt", "desc"),
+          startAt(searchValue),
+          endAt(`${searchValue}\uf8ff`),
+        )
+      : query(base, orderBy("title"), orderBy("updatedAt", "desc"), startAt(searchValue), endAt(`${searchValue}\uf8ff`))
+    : params.activeOnly
+      ? query(base, where("active", "==", true), orderBy("updatedAt", "desc"))
+      : query(base, orderBy("updatedAt", "desc"));
   const q = params.cursor
     ? query(baseQuery, startAfter(params.cursor), limit(pageSize))
     : query(baseQuery, limit(pageSize));
@@ -244,6 +269,30 @@ export async function listPackagesPage(params: {
   const snapshot = await getDocs(q);
   const items = snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() as RecommendationPackage) }));
   return { items, cursor: snapshot.docs[snapshot.docs.length - 1] };
+}
+
+export async function listAllPackagesForCache(
+  params: { pageSize?: number } = {},
+): Promise<WithId<RecommendationPackage>[]> {
+  const pageSize = params.pageSize ?? 200;
+  const allItems: WithId<RecommendationPackage>[] = [];
+  let cursor: QueryDocumentSnapshot | undefined;
+
+  while (true) {
+    const page = await listPackagesPage({ pageSize, cursor });
+    allItems.push(...page.items);
+    if (!page.cursor || page.items.length < pageSize) {
+      break;
+    }
+    cursor = page.cursor;
+  }
+
+  return allItems.sort((a, b) => {
+    const aTime = a.updatedAt?.toMillis?.() ?? 0;
+    const bTime = b.updatedAt?.toMillis?.() ?? 0;
+    if (aTime !== bTime) return bTime - aTime;
+    return a.id.localeCompare(b.id);
+  });
 }
 
 export async function getPackage(packageId: string): Promise<WithId<RecommendationPackage> | null> {
@@ -295,7 +344,7 @@ export async function createPackage(input: PackagePayloadInput) {
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
-  await touchMetaConfig();
+  await touchMetaConfig("packagesUpdatedAt");
   return ref;
 }
 
@@ -321,7 +370,7 @@ export async function updatePackage(packageId: string, input: PackagePayloadInpu
       : {}),
     updatedAt: serverTimestamp(),
   });
-  await touchMetaConfig();
+  await touchMetaConfig("packagesUpdatedAt");
 }
 
 export async function updatePackageRecommendationScenarios(
@@ -340,12 +389,12 @@ export async function updatePackageRecommendationScenarios(
     recommendationScenarios: normalizeRecommendationScenarios(recommendationScenarios),
     updatedAt: serverTimestamp(),
   });
-  await touchMetaConfig();
+  await touchMetaConfig("packagesUpdatedAt");
 }
 
 export async function deletePackage(packageId: string) {
   const { db } = initFirebase();
   if (!db) throw new Error("Firestore not initialized.");
   await deleteDoc(doc(db, PACKAGES_COLLECTION, packageId));
-  await touchMetaConfig();
+  await touchMetaConfig("packagesUpdatedAt");
 }

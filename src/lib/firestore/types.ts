@@ -98,6 +98,7 @@ export type RecommendationPackageItem = {
 export type RecommendationPackage = {
   active: boolean;
   title: string;
+  searchTitle?: string;
   description?: string;
   mode: PackageMode;
   items: RecommendationPackageItem[];

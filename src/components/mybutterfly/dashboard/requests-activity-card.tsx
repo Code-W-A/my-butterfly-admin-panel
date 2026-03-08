@@ -111,8 +111,10 @@ export function RequestsActivityCard() {
     load();
   }, [timeRange]);
 
-  const total = React.useMemo(() => data.reduce((sum, p) => sum + p[metric], 0), [data, metric]);
-  const defaultTooltipIndex = data.length ? Math.min(10, data.length - 1) : undefined;
+  // Defensive normalization: keep Recharts input stable even if runtime data is unexpectedly malformed.
+  const chartData = React.useMemo(() => (Array.isArray(data) ? data : []), [data]);
+  const total = React.useMemo(() => chartData.reduce((sum, p) => sum + p[metric], 0), [chartData, metric]);
+  const defaultTooltipIndex = chartData.length ? Math.min(10, chartData.length - 1) : undefined;
 
   return (
     <Card className="@container/card">
@@ -192,7 +194,7 @@ export function RequestsActivityCard() {
       </CardHeader>
       <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
         <ChartContainer config={chartConfig} className="aspect-auto h-62 w-full">
-          <AreaChart data={data}>
+          <AreaChart data={chartData}>
             <defs>
               <linearGradient id="fill-total" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="var(--color-total)" stopOpacity={0.9} />
